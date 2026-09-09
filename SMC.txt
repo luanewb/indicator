@@ -1,8 +1,8 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © AlgoAlpha
 //@version=6
-// Version: 1.0.1
-indicator("Smart Money Breakout Signals [AlgoAlpha] v1.0.1", shorttitle="AlgoAlpha - Smart Money Breakout v1.0.1", overlay=true)
+// Version: 1.0.2
+indicator("SMC - breakout - retest v1.0.2", shorttitle="SMC - breakout - retest v1.0.2", overlay=true)
 
 swingSize = input.int(25, "Market Structure Time-Horizon", tooltip='Defines the number of candles used to determine market structure. Larger values smooth out market structure changes but may delay signals.', group="Inputs")
 bosConfType = input.string('Candle Close', 'BOS Confirmation Type', ['Candle Close', 'Wicks'], tooltip='Specifies whether a candle close or a wick surpassing the previous swing point is used to confirm a Break of Structure (BOS).', group="Inputs")
@@ -11,6 +11,8 @@ cancelOnSL = input.bool(true, "Cancel Retest If Price Invalidates SL", tooltip="
 cancelOnTP = input.bool(false, "Cancel Retest If Price Reaches TP First", tooltip="Cancels the pending retest if price already reaches TP before retesting.", group="Inputs")
 showSL = input.bool(true, 'Show Stop Loss Lines', tooltip='Enables or disables the display of Stop Loss lines on chart.', group="Inputs")
 showRetestLine = input.bool(true, "Show Pending Retest Line", tooltip="Displays a line at the breakout level waiting for price to retest.", group="Visualization")
+showTable = input.bool(true, "Show Performance Table", tooltip="Enables or disables the display of performance and drawdown statistics table.", group="Visualization")
+riskPerTradePct = input.float(1.0, "Risk Per Trade (%) for DD Calculation", minval=0.1, step=0.5, tooltip="Risk % per trade used to calculate Max Drawdown (%) based on equity curve.", group="Inputs")
 color BULL = input.color(#00ffbb, "Bullish Color", group="Visualization", tooltip='Sets the color used to represent bullish signals and breakout lines.')
 color BEAR = input.color(#ff1100, "Bearish Color", group="Visualization", tooltip='Sets the color used to represent bearish signals and breakout lines.')
 color SL_COLOR = input.color(#ff6600, "Stop Loss Color", group="Visualization", tooltip='Sets the color used for Stop Loss lines.')
@@ -103,6 +105,18 @@ var total = 0
 var tp1s = 0
 var tp2s = 0
 var tp3s = 0
+
+// Thống kê hiệu suất, Drawdown & Chuỗi lệnh
+var float netProfitR = 0.0
+var float peakProfitR = 0.0
+var float maxDrawdownR = 0.0
+var float equity = 100.0        // Giả định vốn xuất phát 100%
+var float peakEquity = 100.0
+var float maxDrawdownPct = 0.0
+var int currentConsecLosses = 0
+var int maxConsecLosses = 0
+var int totalWins = 0
+var int totalLosses = 0
 
 // ==== TRẠNG THÁI CHỜ RETEST (PENDING RETEST) ====
 var int pendingSignal = 0       // 1: Chờ Bullish Retest, -1: Chờ Bearish Retest, 0: Không có
@@ -249,8 +263,45 @@ if active2 == -1 and low < TP2
     tp3s += 1
     active2 := 0
 
-// Đóng lệnh khi TP hoặc SL chạm
-if ((active == 1 and (high > TP or low < SL)) or (active == -1 and (low < TP or high > SL))) and not (trigger != 0 and trigger[1] == 0)
+// Đóng lệnh khi TP hoặc SL chạm & Cập nhật Drawdown / Lợi nhuận
+bool isEntryBar = trigger != 0 and trigger[1] == 0
+bool isLongClose = active == 1 and not isEntryBar and (high > TP or low < SL)
+bool isShortClose = active == -1 and not isEntryBar and (low < TP or high > SL)
+
+if isLongClose or isShortClose
+    bool isWin = false
+    if isLongClose
+        if high > TP and low < SL
+            // Cả TP và SL cùng quét trong 1 nến: kiểm tra khoảng cách từ giá mở cửa
+            isWin := (open - SL) > (TP - open)
+        else
+            isWin := high > TP
+    else if isShortClose
+        if low < TP and high > SL
+            isWin := (SL - open) > (open - TP)
+        else
+            isWin := low < TP
+
+    float tradeProfitR = isWin ? RR : -1.0
+    netProfitR += tradeProfitR
+    peakProfitR := math.max(peakProfitR, netProfitR)
+    float currentDDR = peakProfitR - netProfitR
+    maxDrawdownR := math.max(maxDrawdownR, currentDDR)
+
+    float tradeReturnRate = tradeProfitR * (riskPerTradePct / 100.0)
+    equity := equity * (1.0 + tradeReturnRate)
+    peakEquity := math.max(peakEquity, equity)
+    float currentDDPct = peakEquity > 0 ? ((peakEquity - equity) / peakEquity) * 100.0 : 0.0
+    maxDrawdownPct := math.max(maxDrawdownPct, currentDDPct)
+
+    if isWin
+        totalWins += 1
+        currentConsecLosses := 0
+    else
+        totalLosses += 1
+        currentConsecLosses += 1
+        maxConsecLosses := math.max(maxConsecLosses, currentConsecLosses)
+
     active := 0
 
 // Quản lý TP lines
@@ -293,7 +344,7 @@ if barstate.islast
     var table data_table = table.new(
          position=position.top_right,
          columns=2,
-         rows=5,
+         rows=9,
          bgcolor=chart.bg_color,
          border_width=1,
          border_color=chart.fg_color,
@@ -301,100 +352,178 @@ if barstate.islast
          frame_width=1
      )
 
-    t1_rate = total > 0 ? (tp1s / total) * 100.0 : na
-    t2_rate = total > 0 ? (tp2s / total) * 100.0 : na
-    t3_rate = total > 0 ? (tp3s / total) * 100.0 : na
+    if showTable
+        t1_rate = total > 0 ? (tp1s / total) * 100.0 : na
+        t2_rate = total > 0 ? (tp2s / total) * 100.0 : na
+        t3_rate = total > 0 ? (tp3s / total) * 100.0 : na
 
-    table.cell(
-         data_table,
-         column   = 0,
-         row      = 0,
-         text     = "Smart Money Breakout Stats",
-         text_size= size.tiny,
-         text_color = chart.fg_color,
-         text_halign= text.align_center
-     )
-    table.cell(
-         data_table,
-         column   = 1,
-         row      = 0,
-         text     = "Value",
-         text_size= size.tiny,
-         text_color = chart.fg_color,
-         text_halign= text.align_center
-     )
+        profitColor = netProfitR > 0 ? color.lime : netProfitR < 0 ? color.red : chart.fg_color
+        ddColor = maxDrawdownR > 0 ? color.red : chart.fg_color
 
-    table.cell(
-         data_table,
-         column   = 0,
-         row      = 1,
-         text     = "Total Trades (Retest)",
-         text_size= size.tiny,
-         text_color = chart.fg_color
-     )
-    table.cell(
-         data_table,
-         column   = 1,
-         row      = 1,
-         text     = str.tostring(total),
-         text_size= size.tiny,
-         text_color = chart.fg_color,
-         text_halign= text.align_center
-     )
+        table.cell(
+             data_table,
+             column   = 0,
+             row      = 0,
+             text     = "Smart Money Breakout Stats",
+             text_size= size.tiny,
+             text_color = chart.fg_color,
+             text_halign= text.align_center
+         )
+        table.cell(
+             data_table,
+             column   = 1,
+             row      = 0,
+             text     = "Value",
+             text_size= size.tiny,
+             text_color = chart.fg_color,
+             text_halign= text.align_center
+         )
 
-    table.cell(
-         data_table,
-         column   = 0,
-         row      = 2,
-         text     = "TP1 Win Rate",
-         text_size= size.tiny,
-         text_color = chart.fg_color
-     )
-    table.cell(
-         data_table,
-         column   = 1,
-         row      = 2,
-         text     = total > 0 ? str.format("{0,number,#.##}%", t3_rate) : "No Trades",
-         text_size= size.tiny,
-         text_color = chart.fg_color,
-         text_halign= text.align_center
-     )
+        table.cell(
+             data_table,
+             column   = 0,
+             row      = 1,
+             text     = "Total Trades (Retest)",
+             text_size= size.tiny,
+             text_color = chart.fg_color
+         )
+        table.cell(
+             data_table,
+             column   = 1,
+             row      = 1,
+             text     = str.tostring(total),
+             text_size= size.tiny,
+             text_color = chart.fg_color,
+             text_halign= text.align_center
+         )
 
-    table.cell(
-         data_table,
-         column   = 0,
-         row      = 3,
-         text     = "TP2 Win Rate",
-         text_size= size.tiny,
-         text_color = chart.fg_color
-     )
-    table.cell(
-         data_table,
-         column   = 1,
-         row      = 3,
-         text     = total > 0 ? str.format("{0,number,#.##}%", t2_rate) : "No Trades",
-         text_size= size.tiny,
-         text_color = chart.fg_color,
-         text_halign= text.align_center
-     )
+        table.cell(
+             data_table,
+             column   = 0,
+             row      = 2,
+             text     = "TP1 Win Rate",
+             text_size= size.tiny,
+             text_color = chart.fg_color
+         )
+        table.cell(
+             data_table,
+             column   = 1,
+             row      = 2,
+             text     = total > 0 ? str.format("{0,number,#.##}%", t3_rate) : "No Trades",
+             text_size= size.tiny,
+             text_color = chart.fg_color,
+             text_halign= text.align_center
+         )
 
-    table.cell(
-         data_table,
-         column   = 0,
-         row      = 4,
-         text     = "TP3 Win Rate",
-         text_size= size.tiny,
-         text_color = chart.fg_color
-     )
-    table.cell(
-         data_table,
-         column   = 1,
-         row      = 4,
-         text     = total > 0 ? str.format("{0,number,#.##}%", t1_rate) : "No Trades",
-         text_size= size.tiny,
-         text_color = chart.fg_color,
-         text_halign= text.align_center
-     )
+        table.cell(
+             data_table,
+             column   = 0,
+             row      = 3,
+             text     = "TP2 Win Rate",
+             text_size= size.tiny,
+             text_color = chart.fg_color
+         )
+        table.cell(
+             data_table,
+             column   = 1,
+             row      = 3,
+             text     = total > 0 ? str.format("{0,number,#.##}%", t2_rate) : "No Trades",
+             text_size= size.tiny,
+             text_color = chart.fg_color,
+             text_halign= text.align_center
+         )
+
+        table.cell(
+             data_table,
+             column   = 0,
+             row      = 4,
+             text     = "TP3 Win Rate",
+             text_size= size.tiny,
+             text_color = chart.fg_color
+         )
+        table.cell(
+             data_table,
+             column   = 1,
+             row      = 4,
+             text     = total > 0 ? str.format("{0,number,#.##}%", t1_rate) : "No Trades",
+             text_size= size.tiny,
+             text_color = chart.fg_color,
+             text_halign= text.align_center
+         )
+
+        table.cell(
+             data_table,
+             column   = 0,
+             row      = 5,
+             text     = "Net Profit (R)",
+             text_size= size.tiny,
+             text_color = chart.fg_color
+         )
+        table.cell(
+             data_table,
+             column   = 1,
+             row      = 5,
+             text     = total > 0 ? (netProfitR > 0 ? "+" : "") + str.format("{0,number,#.##} R", netProfitR) : "No Trades",
+             text_size= size.tiny,
+             text_color = profitColor,
+             text_halign= text.align_center
+         )
+
+        table.cell(
+             data_table,
+             column   = 0,
+             row      = 6,
+             text     = "Max Drawdown (R)",
+             text_size= size.tiny,
+             text_color = chart.fg_color
+         )
+        table.cell(
+             data_table,
+             column   = 1,
+             row      = 6,
+             text     = total > 0 ? (maxDrawdownR > 0 ? "-" : "") + str.format("{0,number,#.##} R", maxDrawdownR) : "No Trades",
+             text_size= size.tiny,
+             text_color = ddColor,
+             text_halign= text.align_center
+         )
+
+        table.cell(
+             data_table,
+             column   = 0,
+             row      = 7,
+             text     = "Max Drawdown (%)",
+             text_size= size.tiny,
+             text_color = chart.fg_color
+         )
+        table.cell(
+             data_table,
+             column   = 1,
+             row      = 7,
+             text     = total > 0 ? (maxDrawdownPct > 0 ? "-" : "") + str.format("{0,number,#.##}%", maxDrawdownPct) : "No Trades",
+             text_size= size.tiny,
+             text_color = ddColor,
+             text_halign= text.align_center
+         )
+
+        table.cell(
+             data_table,
+             column   = 0,
+             row      = 8,
+             text     = "Max Consec Losses",
+             text_size= size.tiny,
+             text_color = chart.fg_color
+         )
+        table.cell(
+             data_table,
+             column   = 1,
+             row      = 8,
+             text     = total > 0 ? str.tostring(maxConsecLosses) : "No Trades",
+             text_size= size.tiny,
+             text_color = chart.fg_color,
+             text_halign= text.align_center
+         )
+    else
+        table.clear(data_table, 0, 0, 1, 8)
 
 //////Alerts
 alertcondition(buyEntry, "Bullish Retest Entry", "Bullish Retest Entry Executed")
