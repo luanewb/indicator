@@ -1,8 +1,8 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © AlgoAlpha
 //@version=6
-// Version: 1.0.3
-strategy("SMC - breakout - retest v1.0.3", shorttitle="SMC Strategy v1.0.3", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1, pyramiding=0)
+// Version: 1.0.4
+strategy("SMC - breakout - retest v1.0.4", shorttitle="SMC Strategy v1.0.4", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1, pyramiding=0)
 
 // ==== CẤU HÌNH THỊ TRƯỜNG & TÍN HIỆU ====
 swingSize = input.int(25, "Market Structure Time-Horizon", tooltip='Defines the number of candles used to determine market structure. Larger values smooth out market structure changes but may delay signals.', group="Market Structure")
@@ -10,6 +10,7 @@ bosConfType = input.string('Candle Close', 'BOS Confirmation Type', ['Candle Clo
 choch = input.bool(true, 'Show CHoCH', tooltip='Enables or disables the display of Change of Character (CHoCH) labels, highlighting the first structural break against the trend.', group="Market Structure")
 
 // ==== QUẢN LÝ LỆNH & RỦI RO (RISK MANAGEMENT) ====
+riskPerTradePct = input.float(1.0, "Risk mỗi lệnh (%)", minval=0.01, step=0.1, tooltip="Tỷ lệ % rủi ro trên tổng tài khoản (Equity) cho mỗi lệnh (ví dụ: 1% của $10k là $100, khi tài khoản tăng $11k là $110)", group="Risk & Strategy")
 rrRatio = input.float(2.0, "Risk / Reward Ratio (RR)", minval=0.1, step=0.1, tooltip="Tùy chọn tỷ lệ Risk:Reward cho chốt lời (TP = Entry +/- Dist * RR)", group="Risk & Strategy")
 cancelOnSL = input.bool(true, "Cancel Retest If Price Invalidates SL", tooltip="Cancels the pending retest if price moves beyond Stop Loss before retesting.", group="Risk & Strategy")
 cancelOnTP = input.bool(false, "Cancel Retest If Price Reaches TP First", tooltip="Cancels the pending retest if price already reaches TP before retesting.", group="Risk & Strategy")
@@ -25,7 +26,6 @@ inDateRange = not useDateFilter or (time >= startDate and time <= endDate)
 showSL = input.bool(true, 'Show Stop Loss Lines', tooltip='Enables or disables the display of Stop Loss lines on chart.', group="Visualization")
 showRetestLine = input.bool(true, "Show Pending Retest Line", tooltip="Displays a line at the breakout level waiting for price to retest.", group="Visualization")
 showTable = input.bool(true, "Show Performance Table", tooltip="Enables or disables the display of performance and drawdown statistics table.", group="Visualization")
-riskPerTradePct = input.float(1.0, "Risk Per Trade (%) for DD Calculation", minval=0.1, step=0.5, tooltip="Risk % per trade used to calculate Max Drawdown (%) based on equity curve in the custom table.", group="Visualization")
 color BULL = input.color(#00ffbb, "Bullish Color", group="Visualization", tooltip='Sets the color used to represent bullish signals and breakout lines.')
 color BEAR = input.color(#ff1100, "Bearish Color", group="Visualization", tooltip='Sets the color used to represent bearish signals and breakout lines.')
 color SL_COLOR = input.color(#ff6600, "Stop Loss Color", group="Visualization", tooltip='Sets the color used for Stop Loss lines.')
@@ -102,6 +102,13 @@ trigger = 0
 // Tùy chọn RR (Risk:Reward)
 RR = rrRatio
 
+// Hàm tính toán khối lượng vào lệnh (position sizing) dựa trên % rủi ro tài khoản hiện tại
+calcQty(float riskDist) =>
+    riskCash = strategy.equity * (riskPerTradePct / 100.0)
+    pv = nz(syminfo.pointvalue, 1.0)
+    qty = (riskDist > 0 and pv > 0) ? (riskCash / (riskDist * pv)) : na
+    qty
+
 var active = 0
 var active1 = 0
 var active2 = 0
@@ -150,7 +157,8 @@ if highBroken
         pendingLine := line.new(bar_index, pendingLevel, bar_index, pendingLevel, color=color.new(BULL, 30), width=1, style=line.style_dotted, force_overlay=true)
     if entryType == 'Limit tại mức Retest' and inDateRange
         strategy.cancel("Short")
-        strategy.entry("Long", strategy.long, limit=pendingLevel)
+        tradeQty = calcQty(pendingDist)
+        strategy.entry("Long", strategy.long, qty=tradeQty, limit=pendingLevel)
         strategy.exit("Exit Long", from_entry="Long", stop=pendingLevel - pendingDist, limit=pendingLevel + pendingDist * RR)
 
 if lowBroken
@@ -164,7 +172,8 @@ if lowBroken
         pendingLine := line.new(bar_index, pendingLevel, bar_index, pendingLevel, color=color.new(BEAR, 30), width=1, style=line.style_dotted, force_overlay=true)
     if entryType == 'Limit tại mức Retest' and inDateRange
         strategy.cancel("Long")
-        strategy.entry("Short", strategy.short, limit=pendingLevel)
+        tradeQty = calcQty(pendingDist)
+        strategy.entry("Short", strategy.short, qty=tradeQty, limit=pendingLevel)
         strategy.exit("Exit Short", from_entry="Short", stop=pendingLevel + pendingDist, limit=pendingLevel - pendingDist * RR)
 
 // Kéo dài đường chờ retest theo các nến tiếp theo
@@ -240,7 +249,8 @@ if buyEntry
     TP2 := pendingLevel + pendingDist * RR * 1 / 3
 
     if entryType == 'Market khi Retest' and inDateRange
-        strategy.entry("Long", strategy.long)
+        tradeQty = calcQty(pendingDist)
+        strategy.entry("Long", strategy.long, qty=tradeQty)
         strategy.exit("Exit Long", from_entry="Long", stop=SL, limit=TP)
 
     TPs.unshift(line.new(bar_index, TP, bar_index, TP, color=color.new(BULL, 70), width=1, force_overlay=true, style=line.style_dashed))
@@ -268,7 +278,8 @@ if sellEntry
     TP2 := pendingLevel - pendingDist * RR * 1 / 3
 
     if entryType == 'Market khi Retest' and inDateRange
-        strategy.entry("Short", strategy.short)
+        tradeQty = calcQty(pendingDist)
+        strategy.entry("Short", strategy.short, qty=tradeQty)
         strategy.exit("Exit Short", from_entry="Short", stop=SL, limit=TP)
 
     TPs.unshift(line.new(bar_index, TP, bar_index, TP, color=color.new(BEAR, 70), width=1, force_overlay=true, style=line.style_dashed))
