@@ -1,8 +1,8 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © AlgoAlpha
 //@version=6
-// Version: 1.0.4
-strategy("SMC - breakout - retest v1.0.4", shorttitle="SMC Strategy v1.0.4", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1, pyramiding=0)
+// Version: 1.0.5
+strategy("SMC - breakout - retest v1.0.5", shorttitle="SMC Strategy v1.0.5", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1, pyramiding=0)
 
 // ==== CẤU HÌNH THỊ TRƯỜNG & TÍN HIỆU ====
 swingSize = input.int(25, "Market Structure Time-Horizon", tooltip='Defines the number of candles used to determine market structure. Larger values smooth out market structure changes but may delay signals.', group="Market Structure")
@@ -14,7 +14,6 @@ riskPerTradePct = input.float(1.0, "Risk mỗi lệnh (%)", minval=0.01, step=0.
 rrRatio = input.float(2.0, "Risk / Reward Ratio (RR)", minval=0.1, step=0.1, tooltip="Tùy chọn tỷ lệ Risk:Reward cho chốt lời (TP = Entry +/- Dist * RR)", group="Risk & Strategy")
 cancelOnSL = input.bool(true, "Cancel Retest If Price Invalidates SL", tooltip="Cancels the pending retest if price moves beyond Stop Loss before retesting.", group="Risk & Strategy")
 cancelOnTP = input.bool(false, "Cancel Retest If Price Reaches TP First", tooltip="Cancels the pending retest if price already reaches TP before retesting.", group="Risk & Strategy")
-entryType = input.string('Limit tại mức Retest', 'Order Entry Type', ['Limit tại mức Retest', 'Market khi Retest'], tooltip='Limit tại mức Retest: đặt lệnh limit chờ sẵn tại mức đỉnh/đáy phá vỡ; Market khi Retest: vào lệnh thị trường ngay khi nến retest xác nhận.', group="Risk & Strategy")
 
 // ==== BỘ LỌC THỜI GIAN BACKTEST ====
 useDateFilter = input.bool(false, "Filter Date Range", tooltip="Giới hạn khoảng thời gian thực hiện backtest", group="Backtest Time Range")
@@ -155,11 +154,6 @@ if highBroken
     pendingBarIndex := bar_index
     if showRetestLine
         pendingLine := line.new(bar_index, pendingLevel, bar_index, pendingLevel, color=color.new(BULL, 30), width=1, style=line.style_dotted, force_overlay=true)
-    if entryType == 'Limit tại mức Retest' and inDateRange
-        strategy.cancel("Short")
-        tradeQty = calcQty(pendingDist)
-        strategy.entry("Long", strategy.long, qty=tradeQty, limit=pendingLevel)
-        strategy.exit("Exit Long", from_entry="Long", stop=pendingLevel - pendingDist, limit=pendingLevel + pendingDist * RR)
 
 if lowBroken
     if not na(pendingLine)
@@ -170,11 +164,6 @@ if lowBroken
     pendingBarIndex := bar_index
     if showRetestLine
         pendingLine := line.new(bar_index, pendingLevel, bar_index, pendingLevel, color=color.new(BEAR, 30), width=1, style=line.style_dotted, force_overlay=true)
-    if entryType == 'Limit tại mức Retest' and inDateRange
-        strategy.cancel("Long")
-        tradeQty = calcQty(pendingDist)
-        strategy.entry("Short", strategy.short, qty=tradeQty, limit=pendingLevel)
-        strategy.exit("Exit Short", from_entry="Short", stop=pendingLevel + pendingDist, limit=pendingLevel - pendingDist * RR)
 
 // Kéo dài đường chờ retest theo các nến tiếp theo
 if pendingSignal != 0 and not na(pendingLine)
@@ -191,16 +180,12 @@ if pendingSignal == 1 and bar_index > pendingBarIndex
         if not na(pendingLine)
             pendingLine.delete()
             pendingLine := na
-        if entryType == 'Limit tại mức Retest'
-            strategy.cancel("Long")
     else if cancelOnTP and high >= (pendingLevel + pendingDist * RR)
         // Giá đã đạt TP trước khi retest -> Bỏ qua tín hiệu
         pendingSignal := 0
         if not na(pendingLine)
             pendingLine.delete()
             pendingLine := na
-        if entryType == 'Limit tại mức Retest'
-            strategy.cancel("Long")
     else if low <= pendingLevel
         // Giá retest lại mức đỉnh đã phá vỡ thành công -> Kích hoạt Entry
         buyEntry := true
@@ -216,16 +201,12 @@ if pendingSignal == -1 and bar_index > pendingBarIndex
         if not na(pendingLine)
             pendingLine.delete()
             pendingLine := na
-        if entryType == 'Limit tại mức Retest'
-            strategy.cancel("Short")
     else if cancelOnTP and low <= (pendingLevel - pendingDist * RR)
         // Giá đã đạt TP trước khi retest -> Bỏ qua tín hiệu
         pendingSignal := 0
         if not na(pendingLine)
             pendingLine.delete()
             pendingLine := na
-        if entryType == 'Limit tại mức Retest'
-            strategy.cancel("Short")
     else if high >= pendingLevel
         // Giá retest lại mức đáy đã phá vỡ thành công -> Kích hoạt Entry
         sellEntry := true
@@ -248,7 +229,7 @@ if buyEntry
     TP1 := pendingLevel + pendingDist * RR * 2 / 3
     TP2 := pendingLevel + pendingDist * RR * 1 / 3
 
-    if entryType == 'Market khi Retest' and inDateRange
+    if inDateRange
         tradeQty = calcQty(pendingDist)
         strategy.entry("Long", strategy.long, qty=tradeQty)
         strategy.exit("Exit Long", from_entry="Long", stop=SL, limit=TP)
@@ -277,7 +258,7 @@ if sellEntry
     TP1 := pendingLevel - pendingDist * RR * 2 / 3
     TP2 := pendingLevel - pendingDist * RR * 1 / 3
 
-    if entryType == 'Market khi Retest' and inDateRange
+    if inDateRange
         tradeQty = calcQty(pendingDist)
         strategy.entry("Short", strategy.short, qty=tradeQty)
         strategy.exit("Exit Short", from_entry="Short", stop=SL, limit=TP)
@@ -291,6 +272,12 @@ if sellEntry
 
     linefill.new(TPs.first(), TPs1.first(), color.new(BEAR, 90))
     alert("Bearish Retest Entry Executed", alert.freq_once_per_bar)
+
+// Duy trì lệnh Stop Loss và Take Profit liên tục khi vị thế đang mở
+if strategy.position_size > 0
+    strategy.exit("Exit Long", from_entry="Long", stop=SL, limit=TP)
+if strategy.position_size < 0
+    strategy.exit("Exit Short", from_entry="Short", stop=SL, limit=TP)
 
 // ==== TP HIT LOGIC (CHO BẢNG THỐNG KÊ TÍCH HỢP) ====
 if active == 1 and high > TP
@@ -355,7 +342,6 @@ if isLongClose or isShortClose
 // Tự động đóng toàn bộ lệnh chiến lược nếu quá khoảng thời gian backtest
 if useDateFilter and time > endDate
     strategy.close_all(comment="End of Backtest Period")
-    strategy.cancel_all()
 
 // Quản lý TP lines
 if TPs.size() > 0
