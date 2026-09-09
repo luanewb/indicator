@@ -1,18 +1,31 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © AlgoAlpha
 //@version=6
-// Version: 1.0.2
-indicator("SMC - breakout - retest v1.0.2", shorttitle="SMC - breakout - retest v1.0.2", overlay=true)
+// Version: 1.0.3
+strategy("SMC - breakout - retest v1.0.3", shorttitle="SMC Strategy v1.0.3", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1, pyramiding=0)
 
-swingSize = input.int(25, "Market Structure Time-Horizon", tooltip='Defines the number of candles used to determine market structure. Larger values smooth out market structure changes but may delay signals.', group="Inputs")
-bosConfType = input.string('Candle Close', 'BOS Confirmation Type', ['Candle Close', 'Wicks'], tooltip='Specifies whether a candle close or a wick surpassing the previous swing point is used to confirm a Break of Structure (BOS).', group="Inputs")
-choch = input.bool(true, 'Show CHoCH', tooltip='Enables or disables the display of Change of Character (CHoCH) labels, highlighting the first structural break against the trend.', group="Inputs")
-cancelOnSL = input.bool(true, "Cancel Retest If Price Invalidates SL", tooltip="Cancels the pending retest if price moves beyond Stop Loss before retesting.", group="Inputs")
-cancelOnTP = input.bool(false, "Cancel Retest If Price Reaches TP First", tooltip="Cancels the pending retest if price already reaches TP before retesting.", group="Inputs")
-showSL = input.bool(true, 'Show Stop Loss Lines', tooltip='Enables or disables the display of Stop Loss lines on chart.', group="Inputs")
+// ==== CẤU HÌNH THỊ TRƯỜNG & TÍN HIỆU ====
+swingSize = input.int(25, "Market Structure Time-Horizon", tooltip='Defines the number of candles used to determine market structure. Larger values smooth out market structure changes but may delay signals.', group="Market Structure")
+bosConfType = input.string('Candle Close', 'BOS Confirmation Type', ['Candle Close', 'Wicks'], tooltip='Specifies whether a candle close or a wick surpassing the previous swing point is used to confirm a Break of Structure (BOS).', group="Market Structure")
+choch = input.bool(true, 'Show CHoCH', tooltip='Enables or disables the display of Change of Character (CHoCH) labels, highlighting the first structural break against the trend.', group="Market Structure")
+
+// ==== QUẢN LÝ LỆNH & RỦI RO (RISK MANAGEMENT) ====
+rrRatio = input.float(2.0, "Risk / Reward Ratio (RR)", minval=0.1, step=0.1, tooltip="Tùy chọn tỷ lệ Risk:Reward cho chốt lời (TP = Entry +/- Dist * RR)", group="Risk & Strategy")
+cancelOnSL = input.bool(true, "Cancel Retest If Price Invalidates SL", tooltip="Cancels the pending retest if price moves beyond Stop Loss before retesting.", group="Risk & Strategy")
+cancelOnTP = input.bool(false, "Cancel Retest If Price Reaches TP First", tooltip="Cancels the pending retest if price already reaches TP before retesting.", group="Risk & Strategy")
+entryType = input.string('Limit tại mức Retest', 'Order Entry Type', ['Limit tại mức Retest', 'Market khi Retest'], tooltip='Limit tại mức Retest: đặt lệnh limit chờ sẵn tại mức đỉnh/đáy phá vỡ; Market khi Retest: vào lệnh thị trường ngay khi nến retest xác nhận.', group="Risk & Strategy")
+
+// ==== BỘ LỌC THỜI GIAN BACKTEST ====
+useDateFilter = input.bool(false, "Filter Date Range", tooltip="Giới hạn khoảng thời gian thực hiện backtest", group="Backtest Time Range")
+startDate = input.time(timestamp("2023-01-01 00:00"), "Start Date", group="Backtest Time Range")
+endDate = input.time(timestamp("2026-12-31 23:59"), "End Date", group="Backtest Time Range")
+inDateRange = not useDateFilter or (time >= startDate and time <= endDate)
+
+// ==== HIỂN THỊ & BẢNG THỐNG KÊ ====
+showSL = input.bool(true, 'Show Stop Loss Lines', tooltip='Enables or disables the display of Stop Loss lines on chart.', group="Visualization")
 showRetestLine = input.bool(true, "Show Pending Retest Line", tooltip="Displays a line at the breakout level waiting for price to retest.", group="Visualization")
 showTable = input.bool(true, "Show Performance Table", tooltip="Enables or disables the display of performance and drawdown statistics table.", group="Visualization")
-riskPerTradePct = input.float(1.0, "Risk Per Trade (%) for DD Calculation", minval=0.1, step=0.5, tooltip="Risk % per trade used to calculate Max Drawdown (%) based on equity curve.", group="Inputs")
+riskPerTradePct = input.float(1.0, "Risk Per Trade (%) for DD Calculation", minval=0.1, step=0.5, tooltip="Risk % per trade used to calculate Max Drawdown (%) based on equity curve in the custom table.", group="Visualization")
 color BULL = input.color(#00ffbb, "Bullish Color", group="Visualization", tooltip='Sets the color used to represent bullish signals and breakout lines.')
 color BEAR = input.color(#ff1100, "Bearish Color", group="Visualization", tooltip='Sets the color used to represent bearish signals and breakout lines.')
 color SL_COLOR = input.color(#ff6600, "Stop Loss Color", group="Visualization", tooltip='Sets the color used for Stop Loss lines.')
@@ -86,8 +99,8 @@ v = ta.highest(x) - ta.lowest(x)
 dist = v / 3
 trigger = 0
 
-// RR cố định = 2 (TP = 2R, SL = 1R)
-RR = 1.0
+// Tùy chọn RR (Risk:Reward)
+RR = rrRatio
 
 var active = 0
 var active1 = 0
@@ -135,6 +148,10 @@ if highBroken
     pendingBarIndex := bar_index
     if showRetestLine
         pendingLine := line.new(bar_index, pendingLevel, bar_index, pendingLevel, color=color.new(BULL, 30), width=1, style=line.style_dotted, force_overlay=true)
+    if entryType == 'Limit tại mức Retest' and inDateRange
+        strategy.cancel("Short")
+        strategy.entry("Long", strategy.long, limit=pendingLevel)
+        strategy.exit("Exit Long", from_entry="Long", stop=pendingLevel - pendingDist, limit=pendingLevel + pendingDist * RR)
 
 if lowBroken
     if not na(pendingLine)
@@ -145,6 +162,10 @@ if lowBroken
     pendingBarIndex := bar_index
     if showRetestLine
         pendingLine := line.new(bar_index, pendingLevel, bar_index, pendingLevel, color=color.new(BEAR, 30), width=1, style=line.style_dotted, force_overlay=true)
+    if entryType == 'Limit tại mức Retest' and inDateRange
+        strategy.cancel("Long")
+        strategy.entry("Short", strategy.short, limit=pendingLevel)
+        strategy.exit("Exit Short", from_entry="Short", stop=pendingLevel + pendingDist, limit=pendingLevel - pendingDist * RR)
 
 // Kéo dài đường chờ retest theo các nến tiếp theo
 if pendingSignal != 0 and not na(pendingLine)
@@ -161,12 +182,16 @@ if pendingSignal == 1 and bar_index > pendingBarIndex
         if not na(pendingLine)
             pendingLine.delete()
             pendingLine := na
+        if entryType == 'Limit tại mức Retest'
+            strategy.cancel("Long")
     else if cancelOnTP and high >= (pendingLevel + pendingDist * RR)
         // Giá đã đạt TP trước khi retest -> Bỏ qua tín hiệu
         pendingSignal := 0
         if not na(pendingLine)
             pendingLine.delete()
             pendingLine := na
+        if entryType == 'Limit tại mức Retest'
+            strategy.cancel("Long")
     else if low <= pendingLevel
         // Giá retest lại mức đỉnh đã phá vỡ thành công -> Kích hoạt Entry
         buyEntry := true
@@ -182,12 +207,16 @@ if pendingSignal == -1 and bar_index > pendingBarIndex
         if not na(pendingLine)
             pendingLine.delete()
             pendingLine := na
+        if entryType == 'Limit tại mức Retest'
+            strategy.cancel("Short")
     else if cancelOnTP and low <= (pendingLevel - pendingDist * RR)
         // Giá đã đạt TP trước khi retest -> Bỏ qua tín hiệu
         pendingSignal := 0
         if not na(pendingLine)
             pendingLine.delete()
             pendingLine := na
+        if entryType == 'Limit tại mức Retest'
+            strategy.cancel("Short")
     else if high >= pendingLevel
         // Giá retest lại mức đáy đã phá vỡ thành công -> Kích hoạt Entry
         sellEntry := true
@@ -204,11 +233,15 @@ if buyEntry
     trigger := 1
     total += 1
 
-    // SL = 1R, TP = 2R (tính từ mức retest)
+    // SL = 1R, TP = RR (tính từ mức retest)
     SL  := pendingLevel - pendingDist
     TP  := pendingLevel + pendingDist * RR
     TP1 := pendingLevel + pendingDist * RR * 2 / 3
     TP2 := pendingLevel + pendingDist * RR * 1 / 3
+
+    if entryType == 'Market khi Retest' and inDateRange
+        strategy.entry("Long", strategy.long)
+        strategy.exit("Exit Long", from_entry="Long", stop=SL, limit=TP)
 
     TPs.unshift(line.new(bar_index, TP, bar_index, TP, color=color.new(BULL, 70), width=1, force_overlay=true, style=line.style_dashed))
     TPs1.unshift(line.new(bar_index, TP1, bar_index, TP1, color=color.new(BULL, 50), width=1, force_overlay=true, style=line.style_dashed))
@@ -228,11 +261,15 @@ if sellEntry
     trigger := 1
     total += 1
 
-    // SL = 1R, TP = 2R (tính từ mức retest)
+    // SL = 1R, TP = RR (tính từ mức retest)
     SL  := pendingLevel + pendingDist
     TP  := pendingLevel - pendingDist * RR
     TP1 := pendingLevel - pendingDist * RR * 2 / 3
     TP2 := pendingLevel - pendingDist * RR * 1 / 3
+
+    if entryType == 'Market khi Retest' and inDateRange
+        strategy.entry("Short", strategy.short)
+        strategy.exit("Exit Short", from_entry="Short", stop=SL, limit=TP)
 
     TPs.unshift(line.new(bar_index, TP, bar_index, TP, color=color.new(BEAR, 70), width=1, force_overlay=true, style=line.style_dashed))
     TPs1.unshift(line.new(bar_index, TP1, bar_index, TP1, color=color.new(BEAR, 50), width=1, force_overlay=true, style=line.style_dashed))
@@ -244,7 +281,7 @@ if sellEntry
     linefill.new(TPs.first(), TPs1.first(), color.new(BEAR, 90))
     alert("Bearish Retest Entry Executed", alert.freq_once_per_bar)
 
-// ==== TP HIT LOGIC ====
+// ==== TP HIT LOGIC (CHO BẢNG THỐNG KÊ TÍCH HỢP) ====
 if active == 1 and high > TP
     tp1s += 1
 if active1 == 1 and high > TP1
@@ -303,6 +340,11 @@ if isLongClose or isShortClose
         maxConsecLosses := math.max(maxConsecLosses, currentConsecLosses)
 
     active := 0
+
+// Tự động đóng toàn bộ lệnh chiến lược nếu quá khoảng thời gian backtest
+if useDateFilter and time > endDate
+    strategy.close_all(comment="End of Backtest Period")
+    strategy.cancel_all()
 
 // Quản lý TP lines
 if TPs.size() > 0
