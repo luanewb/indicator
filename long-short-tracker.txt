@@ -1,0 +1,313 @@
+//@version=5
+// Version: 2.0.1
+indicator("Long/Short Tracker v2.0.1", overlay=true)
+
+// --- THIẾT LẬP MỨC GIÁ & NẾN VÀO LỆNH ---
+grp_setup      = "1. Mức giá & Vị trí nến vào lệnh"
+entryTime      = input.time(0, "Chọn nến vào lệnh (Click/Kéo thả trên Chart)", confirm=true, group=grp_setup)
+entryPx        = input.price(0.0, "Mức giá Entry (Click/Kéo thả)", confirm=true, group=grp_setup)
+slPx           = input.price(0.0, "Mức giá Stop Loss (Click/Kéo thả)", confirm=true, group=grp_setup)
+ignorePastWick = input.bool(false, "Vào lệnh trực tiếp tại nến hiện tại (Bỏ qua râu nến cũ)", tooltip="Bật tùy chọn này khi bạn vào lệnh ngay tại thời điểm hiện tại trên cây nến đang chạy và muốn bỏ qua toàn bộ đỉnh/đáy đã hình thành trước đó trong cùng cây nến.", group=grp_setup)
+
+grp_manual  = "2. Tinh chỉnh vị trí nến lùi (Tùy chọn)"
+useOffset   = input.bool(false, "Sử dụng số nến lùi (Offset)", inline="offset", group=grp_manual)
+barsBack    = input.int(10, "Số nến lùi về trước", minval=0, inline="offset", group=grp_manual)
+
+grp_rr      = "3. Tỷ lệ R:R (Take Profit)"
+rrMode      = input.string("x2 (1:2)", "Tùy chọn R:R", options=["x2 (1:2)", "x3 (1:3)", "Tự cấu hình"], group=grp_rr)
+customRR    = input.float(2.0, "Hệ số R tùy biến", minval=0.1, step=0.1, group=grp_rr)
+
+grp_risk    = "4. Quản lý vốn & Tính toán Khối lượng (Volume)"
+accountBal  = input.float(10000.0, "Số dư tài khoản ($)", minval=0.0, step=100.0, group=grp_risk)
+riskPercent = input.float(1.0, "% Rủi ro mỗi lệnh (%)", minval=0.01, maxval=100.0, step=0.1, group=grp_risk)
+
+grp_box     = "5. Kích thước hiển thị"
+boxLength   = input.int(15, "Độ rộng tối thiểu (số nến)", minval=2, group=grp_box)
+
+// --- CẤU HÌNH ẨN / HIỆN THÔNG TIN ---
+grp_vis     = "6. Cấu hình Ẩn / Hiện thông tin"
+showStatus  = input.bool(true,  "Nhãn trạng thái & PnL/MFE/MAE", group=grp_vis)
+showEntry   = input.bool(false, "Mức Entry (Đường kẻ & Nhãn giá)", group=grp_vis)
+showSL      = input.bool(false, "Mức Stop Loss (Đường kẻ & Nhãn giá)", group=grp_vis)
+showTP      = input.bool(false, "Mức Take Profit (Đường kẻ & Nhãn giá)", group=grp_vis)
+showVol     = input.bool(false, "Nhãn khối lượng vào lệnh (Volume)", group=grp_vis)
+showBoxes   = input.bool(true,  "Vùng hộp lợi nhuận / rủi ro (Boxes)", group=grp_vis)
+
+// --- XÁC ĐỊNH NẾN BẮT ĐẦU ---
+var int clickBar = na
+if entryTime != 0 and time >= entryTime and na(clickBar)
+    clickBar := bar_index
+if barstate.islast and na(clickBar)
+    clickBar := bar_index
+
+var int offsetStartBar = na
+if useOffset and na(offsetStartBar) and not na(last_bar_index)
+    int calcStart = math.max(0, last_bar_index - barsBack)
+    if bar_index >= calcStart
+        offsetStartBar := calcStart
+
+int startBar = useOffset ? offsetStartBar : clickBar
+
+// --- TỰ ĐỘNG XÁC ĐỊNH LONG / SHORT VÀ TÍNH TP ---
+var float lockedAutoEntry = na
+if not na(startBar) and bar_index == startBar
+    lockedAutoEntry := close
+
+float finalEntry = entryPx == 0.0 ? nz(lockedAutoEntry, close) : entryPx
+float finalSL    = slPx
+
+bool isShort = finalSL > finalEntry
+bool isLong  = finalSL < finalEntry
+
+float rrRatio = switch rrMode
+    "x2 (1:2)"    => 2.0
+    "x3 (1:3)"    => 3.0
+    "Tự cấu hình" => customRR
+    => 2.0
+
+float riskDist = math.abs(finalEntry - finalSL)
+float finalTP  = 0.0
+
+if isLong
+    finalTP := finalEntry + (riskDist * rrRatio)
+else if isShort
+    finalTP := finalEntry - (riskDist * rrRatio)
+
+// --- TÍNH TOÁN KHỐI LƯỢNG (POSITION SIZE / VOLUME) ---
+float riskAmount = accountBal * (riskPercent / 100.0)
+float calcVolume = riskDist > 0.0 ? (riskAmount / riskDist) : 0.0
+
+string volFormatStr = calcVolume >= 100 ? "#.##" : (calcVolume >= 1 ? "#.###" : "#.#####")
+string volText = "Vol: " + str.tostring(calcVolume, volFormatStr) + " (Risk: $" + str.tostring(riskAmount, "#.##") + ")"
+
+// --- HÀM MÔ PHỎNG TỪNG CHẶNG GIÁ ĐƠN ĐIỆU [pStart -> pEnd] ---
+f_processSegment(float pStart, float pEnd, string st, bool trig, int trigBar, int endBar, float maxFav, float maxAdv, float entry, float sl, float tp, float rDist, bool dirLong, int bIdx) =>
+    string nSt     = st
+    bool   nTrig   = trig
+    int    nTrigB  = trigBar
+    int    nEndB   = endBar
+    float  nMaxFav = maxFav
+    float  nMaxAdv = maxAdv
+
+    float segMin = math.min(pStart, pEnd)
+    float segMax = math.max(pStart, pEnd)
+    float activeStart = pStart
+
+    // 1. Chỉ kích hoạt lệnh khi đường giá thực sự cắt qua mức Entry
+    if nSt == "WAITING"
+        if entry >= segMin and entry <= segMax
+            nSt         := "ACTIVE"
+            nTrig       := true
+            nTrigB      := bIdx
+            nMaxFav     := 0.0
+            nMaxAdv     := 0.0
+            activeStart := entry
+
+    // 2. Cập nhật MFE / MAE và kiểm tra chạm TP / SL cho phần đường đi sau khi khớp Entry
+    if nSt == "ACTIVE" and rDist > 0.0
+        if dirLong
+            if activeStart <= sl
+                nSt     := "HIT_SL"
+                nEndB   := bIdx
+                nMaxAdv := math.max(nMaxAdv, 1.0)
+            else if activeStart >= tp
+                nSt     := "HIT_TP"
+                nEndB   := bIdx
+                nMaxFav := math.max(nMaxFav, (tp - entry) / rDist)
+            else if pEnd <= sl
+                nMaxFav := math.max(nMaxFav, math.max(0.0, activeStart - entry) / rDist)
+                nMaxAdv := math.max(nMaxAdv, 1.0)
+                nSt     := "HIT_SL"
+                nEndB   := bIdx
+            else if pEnd >= tp
+                nMaxAdv := math.max(nMaxAdv, math.max(0.0, entry - activeStart) / rDist)
+                nMaxFav := math.max(nMaxFav, (tp - entry) / rDist)
+                nSt     := "HIT_TP"
+                nEndB   := bIdx
+            else
+                float segHigh = math.max(activeStart, pEnd)
+                float segLow  = math.min(activeStart, pEnd)
+                nMaxFav := math.max(nMaxFav, math.max(0.0, segHigh - entry) / rDist)
+                nMaxAdv := math.max(nMaxAdv, math.max(0.0, entry - segLow) / rDist)
+        else
+            if activeStart >= sl
+                nSt     := "HIT_SL"
+                nEndB   := bIdx
+                nMaxAdv := math.max(nMaxAdv, 1.0)
+            else if activeStart <= tp
+                nSt     := "HIT_TP"
+                nEndB   := bIdx
+                nMaxFav := math.max(nMaxFav, (entry - tp) / rDist)
+            else if pEnd >= sl
+                nMaxFav := math.max(nMaxFav, math.max(0.0, entry - activeStart) / rDist)
+                nMaxAdv := math.max(nMaxAdv, 1.0)
+                nSt     := "HIT_SL"
+                nEndB   := bIdx
+            else if pEnd <= tp
+                nMaxAdv := math.max(nMaxAdv, math.max(0.0, activeStart - entry) / rDist)
+                nMaxFav := math.max(nMaxFav, (entry - tp) / rDist)
+                nSt     := "HIT_TP"
+                nEndB   := bIdx
+            else
+                float segHigh = math.max(activeStart, pEnd)
+                float segLow  = math.min(activeStart, pEnd)
+                nMaxFav := math.max(nMaxFav, math.max(0.0, entry - segLow) / rDist)
+                nMaxAdv := math.max(nMaxAdv, math.max(0.0, segHigh - entry) / rDist)
+
+    [nSt, nTrig, nTrigB, nEndB, nMaxFav, nMaxAdv]
+
+// Mô phỏng đường đi OHLC 3 chặng chuẩn trong 1 cây nến:
+// - Nến tăng: Open -> Low -> High -> Close
+// - Nến giảm: Open -> High -> Low -> Close
+f_processBar(float bOpen, float bHigh, float bLow, float bClose, string st, bool trig, int trigBar, int endBar, float maxFav, float maxAdv, float entry, float sl, float tp, float rDist, bool dirLong, int bIdx) =>
+    bool bullPath = bClose > bOpen or (bClose == bOpen and math.abs(bOpen - bLow) <= math.abs(bHigh - bOpen))
+    float p1 = bullPath ? bLow  : bHigh
+    float p2 = bullPath ? bHigh : bLow
+
+    [st1, tr1, tb1, eb1, mf1, ma1] = f_processSegment(bOpen, p1,     st,  trig, trigBar, endBar, maxFav, maxAdv, entry, sl, tp, rDist, dirLong, bIdx)
+    [st2, tr2, tb2, eb2, mf2, ma2] = f_processSegment(p1,    p2,     st1, tr1,  tb1,     eb1,    mf1,    ma1,    entry, sl, tp, rDist, dirLong, bIdx)
+    [st3, tr3, tb3, eb3, mf3, ma3] = f_processSegment(p2,    bClose, st2, tr2,  tb2,     eb2,    mf2,    ma2,    entry, sl, tp, rDist, dirLong, bIdx)
+    [st3, tr3, tb3, eb3, mf3, ma3]
+
+// --- QUẢN LÝ TRẠNG THÁI & THEO DÕI MFE / MAE ---
+var bool   isTriggered   = false
+var int    triggerBar    = int(na)
+var int    endBarIndex   = int(na)
+var string tradeStatus   = "WAITING"
+var float  maxFavorableR = 0.0 // MFE (R cao nhất)
+var float  maxAdverseR   = 0.0 // MAE (R âm sâu nhất)
+
+// Biến lưu giá realtime từ thời điểm gắn chỉ báo (dùng khi bật ignorePastWick trên nến hiện tại)
+varip int   rtTrackBar  = -1
+varip float rtOpenPrice = na
+varip float rtHighPrice = na
+varip float rtLowPrice  = na
+
+if barstate.islast
+    if rtTrackBar != bar_index
+        rtTrackBar  := bar_index
+        rtOpenPrice := close
+        rtHighPrice := close
+        rtLowPrice  := close
+    else
+        rtHighPrice := math.max(nz(rtHighPrice, close), close)
+        rtLowPrice  := math.min(nz(rtLowPrice, close), close)
+
+if not na(startBar) and bar_index >= startBar and finalSL != 0.0 and finalSL != finalEntry
+    if bar_index == startBar
+        isTriggered   := false
+        triggerBar    := int(na)
+        endBarIndex   := int(na)
+        tradeStatus   := "WAITING"
+        maxFavorableR := 0.0
+        maxAdverseR   := 0.0
+
+    bool useRealtimeOnly = ignorePastWick and bar_index == startBar and barstate.islast and not na(rtOpenPrice)
+    float evalOpen  = useRealtimeOnly ? rtOpenPrice : open
+    float evalHigh  = useRealtimeOnly ? rtHighPrice : high
+    float evalLow   = useRealtimeOnly ? rtLowPrice  : low
+    float evalClose = close
+
+    [nStatus, nTrig, nTrigBar, nEndBar, nMaxFav, nMaxAdv] = f_processBar(evalOpen, evalHigh, evalLow, evalClose, tradeStatus, isTriggered, triggerBar, endBarIndex, maxFavorableR, maxAdverseR, finalEntry, finalSL, finalTP, riskDist, isLong, bar_index)
+
+    tradeStatus   := nStatus
+    isTriggered   := nTrig
+    triggerBar    := nTrigBar
+    endBarIndex   := nEndBar
+    maxFavorableR := nMaxFav
+    maxAdverseR   := nMaxAdv
+
+// Tính Floating P&L tại nến hiện tại (tính theo giá Close)
+float currentFloatingR = 0.0
+if tradeStatus == "ACTIVE" and riskDist > 0.0
+    float pnlDist = isLong ? (close - finalEntry) : (finalEntry - close)
+    currentFloatingR := pnlDist / riskDist
+
+float currentFloatingUSD = currentFloatingR * riskAmount
+
+// Xác định nến kết thúc để vẽ đồ họa (đảm bảo luôn có độ rộng hiển thị rõ ràng)
+int effStartBar = nz(startBar, bar_index)
+int minRightBar = effStartBar + boxLength
+int finalEndBar = na(endBarIndex) ? math.max(bar_index, minRightBar) : (endBarIndex >= bar_index ? math.max(endBarIndex, minRightBar) : math.max(endBarIndex, effStartBar + 1))
+
+// --- HIỂN THỊ TRÊN BIỂU ĐỒ ---
+var box tpBox = na
+var box slBox = na
+var line entryLine = na
+var line slLine = na
+var line tpLine = na
+var label statusLbl = na
+var label entryLbl = na
+var label tpLbl = na
+var label slLbl = na
+var label volLbl = na
+
+if barstate.islast and not na(startBar) and finalSL != 0.0 and finalSL != finalEntry
+    // Xóa đối tượng vẽ của tick trước
+    box.delete(tpBox)
+    box.delete(slBox)
+    line.delete(entryLine)
+    line.delete(slLine)
+    line.delete(tpLine)
+    label.delete(statusLbl)
+    label.delete(entryLbl)
+    label.delete(tpLbl)
+    label.delete(slLbl)
+    label.delete(volLbl)
+
+    // Xây dựng nội dung trạng thái và thông số MFE / MAE
+    color statusColor = color.gray
+    string statusText = "WAITING"
+    string posName    = isLong ? "LONG" : "SHORT"
+
+    if tradeStatus == "ACTIVE"
+        statusColor := currentFloatingR >= 0 ? color.blue : color.purple
+        string sign = currentFloatingR >= 0 ? "+" : ""
+        statusText  := "ACTIVE | " + sign + str.tostring(currentFloatingR, "#.##") + "R (" + sign + "$" + str.tostring(currentFloatingUSD, "#.##") + ")" +
+                       "\nMax Run: +" + str.tostring(maxFavorableR, "#.##") + "R | DD: -" + str.tostring(maxAdverseR, "#.##") + "R"
+
+    else if tradeStatus == "HIT_TP"
+        statusColor := color.teal
+        statusText  := "HIT TP (+" + str.tostring(rrRatio, "#.##") + "R | +$" + str.tostring(riskAmount * rrRatio, "#.##") + ")" +
+                       "\nMax DD: -" + str.tostring(maxAdverseR, "#.##") + "R"
+
+    else if tradeStatus == "HIT_SL"
+        statusColor := color.maroon
+        statusText  := "HIT SL (-1.00R | -$" + str.tostring(riskAmount, "#.##") + ")" +
+                       "\nMFE: +" + str.tostring(maxFavorableR, "#.##") + "R (+$" + str.tostring(maxFavorableR * riskAmount, "#.##") + ")"
+
+    color tpBg = color.new(color.teal, tradeStatus == "HIT_SL" ? 90 : 75)
+    color slBg = color.new(color.maroon, tradeStatus == "HIT_TP" ? 90 : 75)
+
+    // 1. Vẽ khối hộp (Box)
+    if showBoxes
+        if isLong
+            tpBox := box.new(left=effStartBar, top=finalTP, right=finalEndBar, bottom=finalEntry, border_color=na, bgcolor=tpBg)
+            slBox := box.new(left=effStartBar, top=finalEntry, right=finalEndBar, bottom=finalSL, border_color=na, bgcolor=slBg)
+        else
+            tpBox := box.new(left=effStartBar, top=finalEntry, right=finalEndBar, bottom=finalTP, border_color=na, bgcolor=tpBg)
+            slBox := box.new(left=effStartBar, top=finalSL, right=finalEndBar, bottom=finalEntry, border_color=na, bgcolor=slBg)
+
+    // 2. Đường kẻ và nhãn Entry
+    if showEntry
+        entryLine := line.new(effStartBar, finalEntry, finalEndBar, finalEntry, color=color.orange, width=2, style=line.style_dashed)
+        entryLbl  := label.new(finalEndBar, finalEntry, "Entry: " + str.tostring(finalEntry, format.mintick), color=color.orange, textcolor=color.white, style=label.style_label_left, size=size.small)
+
+    // 3. Đường kẻ và nhãn Stop Loss
+    if showSL
+        slLine := line.new(effStartBar, finalSL, finalEndBar, finalSL, color=color.red, width=2, style=line.style_solid)
+        slLbl  := label.new(finalEndBar, finalSL, "SL: " + str.tostring(finalSL, format.mintick), color=color.maroon, textcolor=color.white, style=label.style_label_left, size=size.small)
+
+    // 4. Đường kẻ và nhãn Take Profit
+    if showTP
+        tpLine := line.new(effStartBar, finalTP, finalEndBar, finalTP, color=color.teal, width=2, style=line.style_solid)
+        tpLbl  := label.new(finalEndBar, finalTP, "TP: " + str.tostring(finalTP, format.mintick), color=color.teal, textcolor=color.white, style=label.style_label_left, size=size.small)
+
+    // 5. Nhãn trạng thái lệnh kết hợp P&L / MFE / MAE
+    if showStatus
+        float lblPriceY = isLong ? finalTP : finalSL
+        statusLbl := label.new(finalEndBar, lblPriceY, "[" + posName + "] " + statusText, color=statusColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+
+    // 6. Nhãn khối lượng vào lệnh
+    if showVol
+        volLbl := label.new(finalEndBar, finalEntry, volText, color=color.purple, textcolor=color.white, style=label.style_label_left, size=size.small)
