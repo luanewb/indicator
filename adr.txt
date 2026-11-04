@@ -1,0 +1,107 @@
+//@version=6
+// Version: 1.0.0
+// D1 Average Range (ADR): trung bình biên độ (High - Low) của nến D1 trong N ngày
+indicator(title="D1 Average Range v1.0.0", shorttitle="ADR v1.0.0", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ===================== INPUTS =====================
+lengthInput   = input.int(20, "Số ngày tính trung bình", minval=1, group="ADR Settings")
+includeToday  = input.bool(false, "Tính cả ngày hiện tại (đang chạy)", group="ADR Settings", tooltip="Tắt: chỉ dùng các ngày đã đóng cửa (không repaint). Bật: thay ngày cũ nhất bằng biên độ hiện tại của hôm nay.")
+
+showLevels    = input.bool(true, "Hiển thị mức ADR (Low + ADR / High - ADR)", group="Levels")
+showHistory   = input.bool(true, "Hiển thị mức ADR các ngày trước", group="Levels")
+upperColor    = input.color(color.new(color.red, 0), "Màu mức trên (Low + ADR)", group="Levels")
+lowerColor    = input.color(color.new(color.green, 0), "Màu mức dưới (High - ADR)", group="Levels")
+lineWidth     = input.int(2, "Độ dày đường", minval=1, maxval=5, group="Levels")
+showLabels    = input.bool(true, "Hiển thị nhãn giá", group="Levels")
+
+showTable     = input.bool(true, "Hiển thị bảng thông tin", group="Table")
+tablePosInput = input.string("Top Right", "Vị trí bảng", options=["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Right"], group="Table")
+textSizeInput = input.string("Small", "Cỡ chữ", options=["Tiny", "Small", "Normal", "Large"], group="Table")
+
+// ===================== DỮ LIỆU D1 =====================
+// lookahead_on + [1] => lấy giá trị của các ngày ĐÃ ĐÓNG CỬA, không repaint
+dRange = high - low
+[adrPrev, oldestRange] = request.security(syminfo.tickerid, "D", [ta.sma(dRange, lengthInput)[1], dRange[lengthInput]], lookahead=barmerge.lookahead_on)
+
+// High / Low của ngày hiện tại (tính trực tiếp trên khung đang xem)
+newDay = timeframe.change("D")
+var float dayHigh = na
+var float dayLow  = na
+if newDay or na(dayHigh)
+    dayHigh := high
+    dayLow  := low
+else
+    dayHigh := math.max(dayHigh, high)
+    dayLow  := math.min(dayLow, low)
+
+todayRange = dayHigh - dayLow
+
+// ADR: chỉ ngày đã đóng, hoặc cửa sổ N ngày gồm cả hôm nay
+adr = includeToday and not na(oldestRange) ? (adrPrev * lengthInput - oldestRange + todayRange) / lengthInput : adrPrev
+
+upperLevel = dayLow + adr     // giá có thể lên tới nếu đi đủ biên độ ADR
+lowerLevel = dayHigh - adr    // giá có thể xuống tới nếu đi đủ biên độ ADR
+
+// ===================== PLOT =====================
+// Ngắt đường ở nến đầu ngày để các ngày không nối với nhau (khung intraday)
+breakLine = timeframe.isintraday and newDay
+plotUpper = showLevels and showHistory and not breakLine ? upperLevel : na
+plotLower = showLevels and showHistory and not breakLine ? lowerLevel : na
+plot(plotUpper, "ADR Upper (Low + ADR)", color=upperColor, linewidth=lineWidth, style=plot.style_linebr)
+plot(plotLower, "ADR Lower (High - ADR)", color=lowerColor, linewidth=lineWidth, style=plot.style_linebr)
+
+// Đường + nhãn kéo dài sang phải cho ngày hiện tại
+var line  upLine  = na
+var line  dnLine  = na
+var label upLabel = na
+var label dnLabel = na
+if barstate.islast and showLevels and not na(adr)
+    line.delete(upLine)
+    line.delete(dnLine)
+    label.delete(upLabel)
+    label.delete(dnLabel)
+    upLine := line.new(bar_index, upperLevel, bar_index + 10, upperLevel, color=upperColor, width=lineWidth, style=line.style_dashed, extend=extend.right)
+    dnLine := line.new(bar_index, lowerLevel, bar_index + 10, lowerLevel, color=lowerColor, width=lineWidth, style=line.style_dashed, extend=extend.right)
+    if showLabels
+        upLabel := label.new(bar_index + 10, upperLevel, "ADR High: " + str.tostring(upperLevel, format.mintick), style=label.style_label_left, color=color.new(upperColor, 20), textcolor=color.white, size=size.small)
+        dnLabel := label.new(bar_index + 10, lowerLevel, "ADR Low: " + str.tostring(lowerLevel, format.mintick), style=label.style_label_left, color=color.new(lowerColor, 20), textcolor=color.white, size=size.small)
+
+// ===================== BẢNG THÔNG TIN =====================
+tablePos = switch tablePosInput
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.middle_right
+
+txtSize = switch textSizeInput
+    "Tiny"   => size.tiny
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.small
+
+var table infoTable = table.new(tablePos, 2, 7, bgcolor=color.new(color.black, 20), border_color=color.gray, border_width=1, frame_color=color.gray, frame_width=1)
+
+fCell(_row, _label, _value, _color) =>
+    table.cell(infoTable, 0, _row, _label, text_color=color.white, text_size=txtSize, text_halign=text.align_left)
+    table.cell(infoTable, 1, _row, _value, text_color=_color, text_size=txtSize, text_halign=text.align_right)
+
+if barstate.islast and showTable and not na(adr)
+    adrPct    = adr / close * 100
+    usedPct   = adr > 0 ? todayRange / adr * 100 : na
+    remaining = math.max(adr - todayRange, 0)
+    usedColor = usedPct >= 100 ? color.red : usedPct >= 75 ? color.orange : color.lime
+
+    table.cell(infoTable, 0, 0, "D1 Average Range (" + str.tostring(lengthInput) + " ngày)", text_color=color.yellow, text_size=txtSize, bgcolor=color.new(color.blue, 50))
+    table.merge_cells(infoTable, 0, 0, 1, 0)
+    fCell(1, "ADR",               str.tostring(adr, format.mintick) + "  (" + str.tostring(adrPct, "#.##") + "%)", color.aqua)
+    fCell(2, "Biên độ hôm nay",   str.tostring(todayRange, format.mintick), color.white)
+    fCell(3, "% ADR đã đi",       str.tostring(usedPct, "#.#") + "%", usedColor)
+    fCell(4, "Còn lại",           str.tostring(remaining, format.mintick), color.white)
+    fCell(5, "Mức trên (Low+ADR)",  str.tostring(upperLevel, format.mintick), upperColor)
+    fCell(6, "Mức dưới (High-ADR)", str.tostring(lowerLevel, format.mintick), lowerColor)
+
+// ===================== ALERTS =====================
+alertcondition(ta.crossover(high, upperLevel[1]) and not newDay, "Chạm mức ADR trên", "Giá chạm mức ADR trên (Low + ADR)")
+alertcondition(ta.crossunder(low, lowerLevel[1]) and not newDay, "Chạm mức ADR dưới", "Giá chạm mức ADR dưới (High - ADR)")
+alertcondition(ta.crossover(todayRange, adr), "Biên độ hôm nay vượt ADR", "Biên độ ngày hôm nay đã vượt ADR")
