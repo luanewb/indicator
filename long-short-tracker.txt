@@ -1,9 +1,12 @@
 //@version=5
-// Version: 2.0.1
-indicator("Long/Short Tracker v2.0.1", overlay=true)
+// Version: 2.0.2
+indicator("Long/Short Tracker v2.0.2", overlay=true)
 
 // --- THIẾT LẬP MỨC GIÁ & NẾN VÀO LỆNH ---
 grp_setup      = "1. Mức giá & Vị trí nến vào lệnh"
+targetSymbol   = input.string("", "Khóa theo Cặp tiền (Ví dụ: XAUUSD, BTC...)", tooltip="Nhập mã cặp tiền bạn đang vào lệnh (không phân biệt hoa/thường, có thể chỉ cần gõ XAU, BTC...). Chỉ báo CHỈ hiển thị và tính toán trên cặp tiền này. Khi chuyển sang cặp khác, chỉ báo sẽ tự ẩn để bảo vệ biểu đồ không bị bóp méo.\nĐể trống = Áp dụng cơ chế tự động bảo vệ khi lệch giá bất thường.", group=grp_setup)
+autoProtect    = input.bool(true, "Tự động bảo vệ khi lệch giá bất thường", tooltip="Phòng trường hợp bạn quên nhập mã cặp tiền: nếu giá Entry lệch quá ngưỡng % so với thị trường hiện tại (do xem cặp tiền khác), chỉ báo sẽ tự động ẩn để chống méo nến.", group=grp_setup)
+maxDevPct      = input.float(40.0, "Ngưỡng lệch giá tối đa (%)", minval=5.0, maxval=100.0, step=5.0, tooltip="Mức chênh lệch tối đa giữa giá Entry và thị trường hiện tại trước khi chỉ báo tự ẩn.", group=grp_setup)
 entryTime      = input.time(0, "Chọn nến vào lệnh (Click/Kéo thả trên Chart)", confirm=true, group=grp_setup)
 entryPx        = input.price(0.0, "Mức giá Entry (Click/Kéo thả)", confirm=true, group=grp_setup)
 slPx           = input.price(0.0, "Mức giá Stop Loss (Click/Kéo thả)", confirm=true, group=grp_setup)
@@ -32,6 +35,7 @@ showSL      = input.bool(false, "Mức Stop Loss (Đường kẻ & Nhãn giá)",
 showTP      = input.bool(false, "Mức Take Profit (Đường kẻ & Nhãn giá)", group=grp_vis)
 showVol     = input.bool(false, "Nhãn khối lượng vào lệnh (Volume)", group=grp_vis)
 showBoxes   = input.bool(true,  "Vùng hộp lợi nhuận / rủi ro (Boxes)", group=grp_vis)
+showNotice  = input.bool(true,  "Bảng thông báo khi chỉ báo tạm ẩn trên cặp khác", group=grp_vis)
 
 // --- XÁC ĐỊNH NẾN BẮT ĐẦU ---
 var int clickBar = na
@@ -79,6 +83,20 @@ float calcVolume = riskDist > 0.0 ? (riskAmount / riskDist) : 0.0
 
 string volFormatStr = calcVolume >= 100 ? "#.##" : (calcVolume >= 1 ? "#.###" : "#.#####")
 string volText = "Vol: " + str.tostring(calcVolume, volFormatStr) + " (Risk: $" + str.tostring(riskAmount, "#.##") + ")"
+
+// --- KIỂM TRA ĐIỀU KIỆN KHÓA CẶP TIỀN & BẢO VỆ TỶ LỆ BIỂU ĐỒ ---
+string cleanLock   = str.upper(str.replace_all(targetSymbol, " ", ""))
+string curTicker   = str.upper(syminfo.ticker)
+string curTickerId = str.upper(syminfo.tickerid)
+string curBase     = str.upper(syminfo.basecurrency)
+
+bool symbolMatches = (cleanLock == "") or str.contains(curTicker, cleanLock) or str.contains(curTickerId, cleanLock) or (curBase != "" and cleanLock == curBase)
+
+// So sánh độ lệch giữa giá Entry và giá hiện tại close
+float priceDiffPct = (finalEntry > 0.0 and close > 0.0) ? (math.abs(finalEntry - close) / close * 100.0) : 0.0
+bool priceMatches  = not autoProtect or (entryPx == 0.0 and slPx == 0.0) or (priceDiffPct <= maxDevPct)
+
+bool isChartActive = symbolMatches and priceMatches
 
 // --- HÀM MÔ PHỎNG TỪNG CHẶNG GIÁ ĐƠN ĐIỆU [pStart -> pEnd] ---
 f_processSegment(float pStart, float pEnd, string st, bool trig, int trigBar, int endBar, float maxFav, float maxAdv, float entry, float sl, float tp, float rDist, bool dirLong, int bIdx) =>
@@ -193,7 +211,7 @@ if barstate.islast
         rtHighPrice := math.max(nz(rtHighPrice, close), close)
         rtLowPrice  := math.min(nz(rtLowPrice, close), close)
 
-if not na(startBar) and bar_index >= startBar and finalSL != 0.0 and finalSL != finalEntry
+if isChartActive and not na(startBar) and bar_index >= startBar and finalSL != 0.0 and finalSL != finalEntry
     if bar_index == startBar
         isTriggered   := false
         triggerBar    := int(na)
@@ -241,8 +259,9 @@ var label entryLbl = na
 var label tpLbl = na
 var label slLbl = na
 var label volLbl = na
+var table noticeTable = table.new(position.top_right, 1, 2, bgcolor=color.new(color.black, 100), border_color=color.new(color.gray, 100), border_width=0, frame_color=color.new(color.gray, 100), frame_width=0)
 
-if barstate.islast and not na(startBar) and finalSL != 0.0 and finalSL != finalEntry
+if barstate.islast
     // Xóa đối tượng vẽ của tick trước
     box.delete(tpBox)
     box.delete(slBox)
@@ -254,60 +273,67 @@ if barstate.islast and not na(startBar) and finalSL != 0.0 and finalSL != finalE
     label.delete(tpLbl)
     label.delete(slLbl)
     label.delete(volLbl)
+    table.clear(noticeTable, 0, 0, 0, 1)
 
-    // Xây dựng nội dung trạng thái và thông số MFE / MAE
-    color statusColor = color.gray
-    string statusText = "WAITING"
-    string posName    = isLong ? "LONG" : "SHORT"
+    if not isChartActive and (entryPx != 0.0 or slPx != 0.0)
+        if showNotice
+            string reason = not symbolMatches ? ("Khóa cặp: [" + targetSymbol + "] | Hiện tại: [" + syminfo.ticker + "]") : ("Lệch giá: Entry " + str.tostring(finalEntry, "#.##") + " vs " + str.tostring(close, "#.##") + " (" + str.tostring(priceDiffPct, "#.#") + "%)")
+            table.cell(noticeTable, 0, 0, "⚠️ Tracker v2.0.2: Tạm ẩn", text_color=color.orange, text_size=size.small, bgcolor=color.new(color.black, 15))
+            table.cell(noticeTable, 0, 1, reason + "\nChuyển về đúng cặp tiền để hiển thị.", text_color=color.white, text_size=size.tiny, bgcolor=color.new(color.black, 15))
+    else if not na(startBar) and finalSL != 0.0 and finalSL != finalEntry
+        // Xây dựng nội dung trạng thái và thông số MFE / MAE
+        color statusColor = color.gray
+        string statusText = "WAITING"
+        string posName    = isLong ? "LONG" : "SHORT"
 
-    if tradeStatus == "ACTIVE"
-        statusColor := currentFloatingR >= 0 ? color.blue : color.purple
-        string sign = currentFloatingR >= 0 ? "+" : ""
-        statusText  := "ACTIVE | " + sign + str.tostring(currentFloatingR, "#.##") + "R (" + sign + "$" + str.tostring(currentFloatingUSD, "#.##") + ")" +
-                       "\nMax Run: +" + str.tostring(maxFavorableR, "#.##") + "R | DD: -" + str.tostring(maxAdverseR, "#.##") + "R"
+        if tradeStatus == "ACTIVE"
+            statusColor := currentFloatingR >= 0 ? color.blue : color.purple
+            string sign = currentFloatingR >= 0 ? "+" : ""
+            statusText  := "ACTIVE | " + sign + str.tostring(currentFloatingR, "#.##") + "R (" + sign + "$" + str.tostring(currentFloatingUSD, "#.##") + ")" +
+                           "\nMax Run: +" + str.tostring(maxFavorableR, "#.##") + "R | DD: -" + str.tostring(maxAdverseR, "#.##") + "R"
 
-    else if tradeStatus == "HIT_TP"
-        statusColor := color.teal
-        statusText  := "HIT TP (+" + str.tostring(rrRatio, "#.##") + "R | +$" + str.tostring(riskAmount * rrRatio, "#.##") + ")" +
-                       "\nMax DD: -" + str.tostring(maxAdverseR, "#.##") + "R"
+        else if tradeStatus == "HIT_TP"
+            statusColor := color.teal
+            statusText  := "HIT TP (+" + str.tostring(rrRatio, "#.##") + "R | +$" + str.tostring(riskAmount * rrRatio, "#.##") + ")" +
+                           "\nMax DD: -" + str.tostring(maxAdverseR, "#.##") + "R"
 
-    else if tradeStatus == "HIT_SL"
-        statusColor := color.maroon
-        statusText  := "HIT SL (-1.00R | -$" + str.tostring(riskAmount, "#.##") + ")" +
-                       "\nMFE: +" + str.tostring(maxFavorableR, "#.##") + "R (+$" + str.tostring(maxFavorableR * riskAmount, "#.##") + ")"
+        else if tradeStatus == "HIT_SL"
+            statusColor := color.maroon
+            statusText  := "HIT SL (-1.00R | -$" + str.tostring(riskAmount, "#.##") + ")" +
+                           "\nMFE: +" + str.tostring(maxFavorableR, "#.##") + "R (+$" + str.tostring(maxFavorableR * riskAmount, "#.##") + ")"
 
-    color tpBg = color.new(color.teal, tradeStatus == "HIT_SL" ? 90 : 75)
-    color slBg = color.new(color.maroon, tradeStatus == "HIT_TP" ? 90 : 75)
+        color tpBg = color.new(color.teal, tradeStatus == "HIT_SL" ? 90 : 75)
+        color slBg = color.new(color.maroon, tradeStatus == "HIT_TP" ? 90 : 75)
 
-    // 1. Vẽ khối hộp (Box)
-    if showBoxes
-        if isLong
-            tpBox := box.new(left=effStartBar, top=finalTP, right=finalEndBar, bottom=finalEntry, border_color=na, bgcolor=tpBg)
-            slBox := box.new(left=effStartBar, top=finalEntry, right=finalEndBar, bottom=finalSL, border_color=na, bgcolor=slBg)
-        else
-            tpBox := box.new(left=effStartBar, top=finalEntry, right=finalEndBar, bottom=finalTP, border_color=na, bgcolor=tpBg)
-            slBox := box.new(left=effStartBar, top=finalSL, right=finalEndBar, bottom=finalEntry, border_color=na, bgcolor=slBg)
+        // 1. Vẽ khối hộp (Box)
+        if showBoxes
+            if isLong
+                tpBox := box.new(left=effStartBar, top=finalTP, right=finalEndBar, bottom=finalEntry, border_color=na, bgcolor=tpBg)
+                slBox := box.new(left=effStartBar, top=finalEntry, right=finalEndBar, bottom=finalSL, border_color=na, bgcolor=slBg)
+            else
+                tpBox := box.new(left=effStartBar, top=finalEntry, right=finalEndBar, bottom=finalTP, border_color=na, bgcolor=tpBg)
+                slBox := box.new(left=effStartBar, top=finalSL, right=finalEndBar, bottom=finalEntry, border_color=na, bgcolor=slBg)
 
-    // 2. Đường kẻ và nhãn Entry
-    if showEntry
-        entryLine := line.new(effStartBar, finalEntry, finalEndBar, finalEntry, color=color.orange, width=2, style=line.style_dashed)
-        entryLbl  := label.new(finalEndBar, finalEntry, "Entry: " + str.tostring(finalEntry, format.mintick), color=color.orange, textcolor=color.white, style=label.style_label_left, size=size.small)
+        // 2. Đường kẻ và nhãn Entry
+        if showEntry
+            entryLine := line.new(effStartBar, finalEntry, finalEndBar, finalEntry, color=color.orange, width=2, style=line.style_dashed)
+            entryLbl  := label.new(finalEndBar, finalEntry, "Entry: " + str.tostring(finalEntry, format.mintick), color=color.orange, textcolor=color.white, style=label.style_label_left, size=size.small)
 
-    // 3. Đường kẻ và nhãn Stop Loss
-    if showSL
-        slLine := line.new(effStartBar, finalSL, finalEndBar, finalSL, color=color.red, width=2, style=line.style_solid)
-        slLbl  := label.new(finalEndBar, finalSL, "SL: " + str.tostring(finalSL, format.mintick), color=color.maroon, textcolor=color.white, style=label.style_label_left, size=size.small)
+        // 3. Đường kẻ và nhãn Stop Loss
+        if showSL
+            slLine := line.new(effStartBar, finalSL, finalEndBar, finalSL, color=color.red, width=2, style=line.style_solid)
+            slLbl  := label.new(finalEndBar, finalSL, "SL: " + str.tostring(finalSL, format.mintick), color=color.maroon, textcolor=color.white, style=label.style_label_left, size=size.small)
 
-    // 4. Đường kẻ và nhãn Take Profit
-    if showTP
-        tpLine := line.new(effStartBar, finalTP, finalEndBar, finalTP, color=color.teal, width=2, style=line.style_solid)
-        tpLbl  := label.new(finalEndBar, finalTP, "TP: " + str.tostring(finalTP, format.mintick), color=color.teal, textcolor=color.white, style=label.style_label_left, size=size.small)
+        // 4. Đường kẻ và nhãn Take Profit
+        if showTP
+            tpLine := line.new(effStartBar, finalTP, finalEndBar, finalTP, color=color.teal, width=2, style=line.style_solid)
+            tpLbl  := label.new(finalEndBar, finalTP, "TP: " + str.tostring(finalTP, format.mintick), color=color.teal, textcolor=color.white, style=label.style_label_left, size=size.small)
 
-    // 5. Nhãn trạng thái lệnh kết hợp P&L / MFE / MAE
-    if showStatus
-        float lblPriceY = isLong ? finalTP : finalSL
-        statusLbl := label.new(finalEndBar, lblPriceY, "[" + posName + "] " + statusText, color=statusColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+        // 5. Nhãn trạng thái lệnh kết hợp P&L / MFE / MAE
+        if showStatus
+            float lblPriceY = isLong ? finalTP : finalSL
+            statusLbl := label.new(finalEndBar, lblPriceY, "[" + posName + "] " + statusText, color=statusColor, textcolor=color.white, style=label.style_label_left, size=size.small)
 
-    // 6. Nhãn khối lượng vào lệnh
-    if showVol
-        volLbl := label.new(finalEndBar, finalEntry, volText, color=color.purple, textcolor=color.white, style=label.style_label_left, size=size.small)
+        // 6. Nhãn khối lượng vào lệnh
+        if showVol
+            volLbl := label.new(finalEndBar, finalEntry, volText, color=color.purple, textcolor=color.white, style=label.style_label_left, size=size.small)
