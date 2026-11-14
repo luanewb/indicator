@@ -410,3 +410,4 @@ class BinanceFuturesClient:
         if symbol:
             params["symbol"] = normalize_binance_symbol(symbol)
         return await self._signed_request("GET", "/fapi/v1/openOrders", params)
+

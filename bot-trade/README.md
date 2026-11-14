@@ -39,3 +39,4 @@ Copy toàn bộ mã nguồn trong file [`long-short-tracker.txt`](file:///d:/app
 3. Bấm **Load unpacked (Tải tiện ích đã giải nén)** và chọn thư mục:
    `d:\app\indicator\bot-trade\tradingview-extension`
 4. Mở lại biểu đồ TradingView, kéo thả `Entry` & `SL` của chỉ báo `Long/Short Tracker v2.0.3` và nhấn **`Alt + B`** để đặt lệnh!
+

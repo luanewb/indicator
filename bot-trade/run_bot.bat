@@ -13,3 +13,4 @@ echo [2/2] Khoi dong MT5 Web Dashboard tai http://localhost:8000 ...
 start "" http://localhost:8000
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 pause
+

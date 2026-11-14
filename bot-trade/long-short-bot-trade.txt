@@ -1,6 +1,6 @@
 //@version=5
-// Version: 2.0.3
-indicator("Long/Short Tracker v2.0.3", overlay=true)
+// Version: 2.0.4
+indicator("Long/Short Bot-trade v2.0.4", overlay=true)
 
 // --- THIẾT LẬP MỨC GIÁ & NẾN VÀO LỆNH ---
 grp_setup      = "1. Mức giá & Vị trí nến vào lệnh"
@@ -284,7 +284,7 @@ if barstate.islast
     if not isChartActive and (entryPx != 0.0 or slPx != 0.0)
         if showNotice
             string reason = not symbolMatches ? ("Khóa cặp: [" + targetSymbol + "] | Hiện tại: [" + syminfo.ticker + "]") : ("Lệch giá: Entry " + str.tostring(finalEntry, "#.##") + " vs " + str.tostring(close, "#.##") + " (" + str.tostring(priceDiffPct, "#.#") + "%)")
-            table.cell(noticeTable, 0, 0, "⚠️ Tracker v2.0.3: Tạm ẩn", text_color=color.orange, text_size=size.small, bgcolor=color.new(color.black, 15))
+            table.cell(noticeTable, 0, 0, "⚠️ Tracker v2.0.4: Tạm ẩn", text_color=color.orange, text_size=size.small, bgcolor=color.new(color.black, 15))
             table.cell(noticeTable, 0, 1, reason + "\nChuyển về đúng cặp tiền để hiển thị.", text_color=color.white, text_size=size.tiny, bgcolor=color.new(color.black, 15))
     else if not na(startBar) and finalSL != 0.0 and finalSL != finalEntry
         // Xây dựng nội dung trạng thái và thông số MFE / MAE
@@ -344,7 +344,7 @@ if barstate.islast
         if showVol
             volLbl := label.new(finalEndBar, finalEntry, volText, color=color.purple, textcolor=color.white, style=label.style_label_left, size=size.small)
 
-// --- XUẤT DỮ LIỆU BRIDGE CHO NÚT ĐẶT LỆNH TRÊN TRADINGVIEW & WEBHOOK (v2.0.3) ---
+// --- XUẤT DỮ LIỆU BRIDGE CHO NÚT ĐẶT LỆNH TRÊN TRADINGVIEW & WEBHOOK (v2.0.4) ---
 bool isValidSetup = isChartActive and not na(startBar) and finalSL != 0.0 and finalSL != finalEntry
 float bridgeDir   = isValidSetup ? (isLong ? 1.0 : -1.0) : 0.0
 var dispBridge    = display.status_line + display.data_window
@@ -361,6 +361,6 @@ plot(enableBridge ? botLeverage  : na, "BOT_LEV",      color=color.gray,   displ
 
 if enableWebhook and barstate.islast and isValidSetup
     string sideStr = isLong ? "LONG" : "SHORT"
-    string payload = '{"symbol":"' + syminfo.ticker + '","side":"' + sideStr + '","entry":' + str.tostring(finalEntry) + ',"sl":' + str.tostring(finalSL) + ',"tp":' + str.tostring(finalTP) + ',"volume":' + str.tostring(calcVolume) + ',"risk_pct":' + str.tostring(riskPercent) + ',"risk_usd":' + str.tostring(riskAmount) + ',"rr":' + str.tostring(rrRatio) + ',"leverage":' + str.tostring(botLeverage) + ',"version":"2.0.3"}'
+    string payload = '{"symbol":"' + syminfo.ticker + '","side":"' + sideStr + '","entry":' + str.tostring(finalEntry) + ',"sl":' + str.tostring(finalSL) + ',"tp":' + str.tostring(finalTP) + ',"volume":' + str.tostring(calcVolume) + ',"risk_pct":' + str.tostring(riskPercent) + ',"risk_usd":' + str.tostring(riskAmount) + ',"rr":' + str.tostring(rrRatio) + ',"leverage":' + str.tostring(botLeverage) + ',"version":"2.0.4"}'
     alert(payload, alert.freq_once_per_bar)
 

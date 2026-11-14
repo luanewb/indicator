@@ -1,19 +1,22 @@
-// Long/Short Tracker Bridge v2.0.3 - Nút Đặt Lệnh & Phím tắt (Alt+B) ngay trên TradingView
+// Long/Short Tracker Bridge v2.0.4 - Nút Đặt Lệnh & Phím tắt (Alt+B) ngay trên TradingView
 (function () {
-  if (window.__LS_TRACKER_BRIDGE_LOADED__) return;
+  // Cho phép ghi đè nếu bản cũ đang chạy
+  const oldPanel = document.getElementById("ls-tracker-floating-panel");
+  if (oldPanel) oldPanel.remove();
   window.__LS_TRACKER_BRIDGE_LOADED__ = true;
 
   const BOT_URL = "http://localhost:8000";
   let autoSyncEnabled = true;
   let isMinimized = false;
 
-  // Chuẩn hóa số từ chuỗi trên TradingView (hỗ trợ cả dấu trừ đặc biệt '−' của TradingView)
+  // Chuẩn hóa số từ chuỗi trên TradingView (hỗ trợ cả dấu trừ Unicode '−' và dấu phẩy ngăn cách hàng nghìn)
   function parseTvNumber(str) {
-    if (!str) return NaN;
+    if (str === null || str === undefined) return NaN;
     const cleaned = String(str)
       .replace(/−/g, "-")
       .replace(/,/g, "")
       .replace(/[^0-9.\-]/g, "");
+    if (!cleaned || cleaned === "-" || cleaned === ".") return NaN;
     return parseFloat(cleaned);
   }
 
@@ -34,57 +37,107 @@
     return titleMatch ? titleMatch[1].toUpperCase() : "BTCUSDT";
   }
 
-  // Đọc thông số từ thanh trạng thái (Status Line Legend) của chỉ báo "Long/Short Tracker"
-  function readIndicatorValuesFromLegend() {
-    const legendItems = document.querySelectorAll('[data-name="legend-source-item"]');
-    for (const item of legendItems) {
-      const text = item.textContent || "";
-      if (!text.toLowerCase().includes("long/short tracker")) continue;
-
-      // Lấy tất cả các ô giá trị plot của chỉ báo Long/Short Tracker v2.0.3
-      // Thứ tự 9 plot trong v2.0.3:
-      // [0] BOT_DIR, [1] BOT_ENTRY, [2] BOT_SL, [3] BOT_TP, [4] BOT_VOL, [5] BOT_RISK_PCT, [6] BOT_RISK_USD, [7] BOT_RR, [8] BOT_LEV
-      const valueEls = item.querySelectorAll('[class*="valueValue"]');
-      const nums = [];
-      valueEls.forEach((v) => {
-        const n = parseTvNumber(v.textContent);
-        if (!isNaN(n)) nums.push(n);
-      });
-
-      if (nums.length >= 4) {
-        return {
-          dir: nums[0],
-          entry: nums[1],
-          sl: nums[2],
-          tp: nums[3],
-          volume: nums[4] || 0,
-          risk_pct: nums[5] || 1.0,
-          risk_usd: nums[6] || 0,
-          rr: nums[7] || 2.0,
-          leverage: nums[8] || 20,
-        };
-      }
+  // Kiểm tra xem bộ 4 số (dir, entry, sl, tp) có hợp lệ theo logic Long/Short Tracker không
+  function isValidTrackerTuple(dir, entry, sl, tp) {
+    if ((dir !== 1 && dir !== -1) || !(entry > 0) || !(sl > 0) || entry === sl) {
+      return false;
     }
-    return null;
+    if (dir === 1 && !(sl < entry)) return false;
+    if (dir === -1 && !(sl > entry)) return false;
+    if (tp > 0) {
+      if (dir === 1 && !(tp > entry)) return false;
+      if (dir === -1 && !(tp < entry)) return false;
+    }
+    return true;
   }
 
-  // Fallback: Nếu người dùng đang mở hộp thoại Cài đặt (Settings) của chỉ báo Long/Short Tracker trên TradingView
-  function readIndicatorFromSettingsDialog() {
-    const dialog = document.querySelector('[data-name="indicator-properties-dialog"]');
-    if (!dialog) return null;
-    const title = dialog.textContent || "";
-    if (!title.toLowerCase().includes("long/short tracker")) return null;
+  // Đọc thông số từ thanh trạng thái (Status Line Legend) của chỉ báo Long/Short Tracker / Bot-trade
+  function readIndicatorValuesFromLegend() {
+    // Tìm tất cả dòng legend trên biểu đồ
+    const candidates = Array.from(document.querySelectorAll('[data-name="legend-source-item"], [class*="sourcesWrapper"] > div'));
 
-    const inputs = dialog.querySelectorAll('input');
-    // Trong Long/Short Tracker:
-    // Input số 1: Ngưỡng lệch giá tối đa (40)
-    // Input số 2 & 3: Thời gian
-    // Input giá Entry, Input giá Stop Loss, Số nến lùi, Hệ số R, Số dư tài khoản, % Rủi ro
-    const numericValues = [];
-    inputs.forEach((inp) => {
-      const val = parseTvNumber(inp.value);
-      if (!isNaN(val)) numericValues.push(val);
-    });
+    for (const item of candidates) {
+      const rawText = (item.textContent || "").replace(/−/g, "-");
+      const lower = rawText.toLowerCase();
+
+      // Hỗ trợ mọi tên chỉ báo: "Long/Short Tracker", "Long/Short Bot-trade", "Tracker", v.v.
+      if (!lower.includes("long/short") && !lower.includes("tracker") && !lower.includes("bot-trade")) {
+        continue;
+      }
+
+      // CÁCH 1: Đọc từ các phần tử lá (leaf spans/divs) có màu sắc của Plot hoặc nằm trong vùng giá trị
+      const leafNums = [];
+      const allChildren = item.querySelectorAll("*");
+      allChildren.forEach((el) => {
+        if (el.children.length === 0) {
+          const txt = (el.textContent || "").trim();
+          // Chỉ lấy chuỗi thuần số (ví dụ "66,579.8", "1.0", "-1.0")
+          if (/^[−\-]?\d+(?:,\d{3})*(?:\.\d+)?$/.test(txt)) {
+            const n = parseTvNumber(txt);
+            if (!isNaN(n)) leafNums.push(n);
+          }
+        }
+      });
+
+      if (leafNums.length >= 9) {
+        const tail9 = leafNums.slice(-9);
+        if (isValidTrackerTuple(tail9[0], tail9[1], tail9[2], tail9[3])) {
+          return {
+            dir: tail9[0],
+            entry: tail9[1],
+            sl: tail9[2],
+            tp: tail9[3],
+            volume: tail9[4] || 0,
+            risk_pct: tail9[5] || 1.0,
+            risk_usd: tail9[6] || 0,
+            rr: tail9[7] || 2.0,
+            leverage: tail9[8] || 20,
+          };
+        }
+      }
+
+      // CÁCH 2: Tách toàn bộ con số trong text của dòng chỉ báo và lấy 9 số cuối cùng
+      // Ví dụ trên màn hình:
+      // "Long/Short Bot-trade v2.0.3 40 66,579.8 66,175.2 10 x2 (1:2) 2 10,000 1 15 20 1.0 66,579.8 66,175.2 67,389.1 0.2 1.0 100.0 2.0 20.0"
+      const matches = rawText.match(/-?\d+(?:,\d{3})*(?:\.\d+)?/g);
+      if (matches && matches.length >= 9) {
+        const allNums = matches.map((m) => parseTvNumber(m)).filter((n) => !isNaN(n));
+        if (allNums.length >= 9) {
+          const t9 = allNums.slice(-9);
+          if (isValidTrackerTuple(t9[0], t9[1], t9[2], t9[3])) {
+            return {
+              dir: t9[0],
+              entry: t9[1],
+              sl: t9[2],
+              tp: t9[3],
+              volume: t9[4] || 0,
+              risk_pct: t9[5] || 1.0,
+              risk_usd: t9[6] || 0,
+              rr: t9[7] || 2.0,
+              leverage: t9[8] || 20,
+            };
+          }
+        }
+
+        // CÁCH 3: Quét trượt (sliding window) từ cuối về đầu để tìm đúng bộ 9 số [dir, entry, sl, tp, vol, risk_pct, risk_usd, rr, lev]
+        for (let i = allNums.length - 9; i >= 0; i--) {
+          const w = allNums.slice(i, i + 9);
+          if (isValidTrackerTuple(w[0], w[1], w[2], w[3])) {
+            return {
+              dir: w[0],
+              entry: w[1],
+              sl: w[2],
+              tp: w[3],
+              volume: w[4] || 0,
+              risk_pct: w[5] || 1.0,
+              risk_usd: w[6] || 0,
+              rr: w[7] || 2.0,
+              leverage: w[8] || 20,
+            };
+          }
+        }
+      }
+    }
     return null;
   }
 
@@ -95,7 +148,7 @@
     position: fixed;
     bottom: 24px;
     right: 24px;
-    width: 310px;
+    width: 315px;
     background: #131722;
     border: 1px solid #2a2e39;
     border-top: 3px solid #14b8a6;
@@ -112,9 +165,10 @@
     <div id="lst-header" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#1e222d;border-radius:8px 8px 0 0;cursor:move;">
       <div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:12px;color:#fff;">
         <span id="lst-dot" style="width:8px;height:8px;border-radius:50%;background:#10b981;display:inline-block;"></span>
-        <span>⚡ LONG/SHORT TRACKER v2.0.3</span>
+        <span>⚡ LONG/SHORT TRACKER v2.0.4</span>
       </div>
       <div style="display:flex;align-items:center;gap:6px;">
+        <button id="lst-sync-now" title="Đọc lại giá từ biểu đồ ngay lập tức" style="background:#334155;border:none;color:#e2e8f0;border-radius:4px;cursor:pointer;font-size:10px;padding:2px 6px;font-weight:600;">🔄 Sync</button>
         <a href="${BOT_URL}" target="_blank" title="Mở bảng quản lý lệnh MT5 Dashboard" style="color:#38bdf8;text-decoration:none;font-size:11px;font-weight:600;">MT5 UI ↗</a>
         <button id="lst-min-btn" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:14px;padding:0 4px;">−</button>
       </div>
@@ -212,6 +266,13 @@
 
   document.getElementById("lst-autosync").addEventListener("change", (e) => {
     autoSyncEnabled = e.target.checked;
+    if (autoSyncEnabled) syncNow(true);
+  });
+
+  document.getElementById("lst-sync-now").addEventListener("click", () => {
+    autoSyncEnabled = true;
+    document.getElementById("lst-autosync").checked = true;
+    syncNow(true);
   });
 
   function updateSideBadge() {
@@ -245,13 +306,12 @@
     });
   });
 
-  // Vòng lặp đọc tự động từ chỉ báo Long/Short Tracker v2.0.3 trên biểu đồ TradingView
-  setInterval(() => {
-    if (!autoSyncEnabled) return;
+  function syncNow(showFeedback = false) {
     const sym = detectTradingViewSymbol();
     if (sym) document.getElementById("lst-symbol").value = sym;
 
     const data = readIndicatorValuesFromLegend();
+    const statusEl = document.getElementById("lst-status-msg");
     if (data && data.entry > 0 && data.sl > 0) {
       document.getElementById("lst-entry").value = data.entry;
       document.getElementById("lst-sl").value = data.sl;
@@ -260,11 +320,25 @@
       if (data.risk_pct > 0) document.getElementById("lst-risk-pct").value = data.risk_pct;
       if (data.rr > 0) document.getElementById("lst-rr").value = data.rr;
       updateSideBadge();
+      if (showFeedback) {
+        statusEl.innerHTML = `<span style="color:#10b981;">✅ Đã đồng bộ: Entry ${data.entry} | SL ${data.sl} | TP ${data.tp}</span>`;
+      }
+    } else if (showFeedback) {
+      statusEl.innerHTML = `<span style="color:#f59e0b;">⚠️ Hãy bật hiển thị 'Values in status line' trên TradingView</span>`;
     }
-  }, 500);
+  }
+
+  // Vòng lặp đọc tự động mỗi 400ms
+  setInterval(() => {
+    if (!autoSyncEnabled) return;
+    syncNow(false);
+  }, 400);
 
   // Hàm gửi lệnh sang Bot
   function sendOrderToBot(orderType = "LIMIT") {
+    // Trước khi gửi, nếu chưa có giá mà đang bật AutoSync thì thử đọc lại 1 lần nữa
+    if (autoSyncEnabled) syncNow(false);
+
     const symbol = document.getElementById("lst-symbol").value.trim().toUpperCase() || detectTradingViewSymbol();
     const entry = parseFloat(document.getElementById("lst-entry").value) || 0;
     const sl = parseFloat(document.getElementById("lst-sl").value) || 0;
@@ -334,4 +408,7 @@
       sendOrderToBot("MARKET");
     }
   });
+
+  // Đọc ngay lần đầu khi khởi tạo
+  syncNow(false);
 })();
