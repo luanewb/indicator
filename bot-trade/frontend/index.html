@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MT5 Terminal - Binance Futures Long/Short Tracker Bot v2.0.5</title>
+  <title>MT5 Terminal - Binance Futures Long/Short Tracker Bot v2.0.6</title>
   <link rel="icon" type="image/png" href="/static/favicon.png" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
@@ -54,7 +54,7 @@
         <span class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" id="ws-dot"></span>
         <h1 class="font-bold text-sm md:text-base tracking-wide text-white flex items-center gap-2">
           <span>⚡ LONG/SHORT TRACKER BOT</span>
-          <span class="text-xs px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 mono">v2.0.5</span>
+          <span class="text-xs px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 mono">v2.0.6</span>
         </h1>
       </div>
       <span id="mode-badge" class="text-xs font-bold px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 mono">
@@ -196,7 +196,7 @@
         </div>
 
         <!-- Risk % & Calculated Volume -->
-        <div class="grid grid-cols-2 gap-2 mb-3">
+        <div class="grid grid-cols-2 gap-2 mb-2.5">
           <div>
             <label class="block text-[11px] text-slate-400 mb-1">% Rủi ro mỗi lệnh (Risk %)</label>
             <div class="flex items-center gap-1">
@@ -209,6 +209,26 @@
             <label class="block text-[11px] text-purple-400 font-semibold mb-1">Khối lượng (Volume)</label>
             <input id="form-volume" type="number" step="any" placeholder="Tự động theo Risk"
               class="w-full bg-slate-900 border border-purple-500/40 rounded px-2.5 py-1.5 text-xs font-bold text-purple-300 mono focus:outline-none" />
+          </div>
+        </div>
+
+        <!-- Stop-Limit Chốt Hòa (Breakeven Recovery) -->
+        <div class="bg-slate-900/95 border border-amber-500/30 rounded p-2 mb-2.5 text-xs">
+          <div class="flex items-center justify-between">
+            <label class="flex items-center gap-1.5 font-bold text-amber-300 cursor-pointer">
+              <input id="form-stoplimit-be" type="checkbox" checked onchange="recalcTrackerForm(false)" class="accent-amber-400 w-3.5 h-3.5" />
+              <span>🛡️ Chạm SL → Đặt Stop-Limit Chốt Hòa</span>
+            </label>
+            <div class="flex items-center gap-1">
+              <span class="text-[10px] text-slate-400">Phí:</span>
+              <input id="form-be-fee" type="number" step="0.01" min="0" value="0.04" oninput="recalcTrackerForm(false)"
+                class="w-14 bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[11px] font-bold text-amber-300 text-center mono" />
+              <span class="text-[10px] text-slate-400">%</span>
+            </div>
+          </div>
+          <div class="mt-1 flex items-center justify-between text-[11px] text-slate-400 pl-5">
+            <span>Khi chạm SL sẽ tự hủy TP & đặt Limit tại:</span>
+            <span id="preview-be-price" class="font-bold text-amber-300 mono">--</span>
           </div>
         </div>
 
@@ -704,6 +724,10 @@
       document.getElementById('preview-risk-dist').innerText = Number(riskDist.toPrecision(5));
       document.getElementById('preview-reward-usd').innerText = `+$${rewardUsd.toFixed(2)} (+${rr.toFixed(2)}R)`;
 
+      const beFeePct = parseFloat(document.getElementById('form-be-fee').value) || 0.04;
+      const bePrice = isLong ? (entry * (1 + beFeePct / 100.0)) : (entry * (1 - beFeePct / 100.0));
+      document.getElementById('preview-be-price').innerText = Number(bePrice.toPrecision(7));
+
       drawTrackerPriceLines();
     }
 
@@ -715,6 +739,8 @@
       const entry = parseFloat(document.getElementById('form-entry').value) || 0;
       const sl = parseFloat(document.getElementById('form-sl').value) || 0;
       const tp = parseFloat(document.getElementById('form-tp').value) || 0;
+      const useBe = document.getElementById('form-stoplimit-be') && document.getElementById('form-stoplimit-be').checked;
+      const beFeePct = parseFloat(document.getElementById('form-be-fee')?.value) || 0.04;
 
       if (entry > 0) {
         priceLines.push(candleSeries.createPriceLine({
@@ -722,10 +748,18 @@
           axisLabelVisible: true, title: 'ENTRY'
         }));
       }
+      if (entry > 0 && sl > 0 && useBe) {
+        const isLong = sl < entry;
+        const bePx = isLong ? entry * (1 + beFeePct / 100.0) : entry * (1 - beFeePct / 100.0);
+        priceLines.push(candleSeries.createPriceLine({
+          price: Number(bePx.toPrecision(7)), color: '#fcd535', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
+          axisLabelVisible: true, title: 'CHỐT HÒA (BE)'
+        }));
+      }
       if (sl > 0) {
         priceLines.push(candleSeries.createPriceLine({
           price: sl, color: '#f43f5e', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid,
-          axisLabelVisible: true, title: 'SL (-1R)'
+          axisLabelVisible: true, title: useBe ? 'SL TRIGGER (Hủy TP -> BE)' : 'SL (-1R)'
         }));
       }
       if (tp > 0) {
@@ -746,6 +780,8 @@
       const risk_pct = parseFloat(document.getElementById('form-risk-pct').value) || 1.0;
       const volume = parseFloat(document.getElementById('form-volume').value) || 0;
       const leverage = parseInt(document.getElementById('form-leverage').value) || 20;
+      const useStopLimitBE = document.getElementById('form-stoplimit-be').checked;
+      const be_fee_pct = parseFloat(document.getElementById('form-be-fee').value) || 0.04;
 
       if (sl <= 0 || sl === entry) {
         showToast('⚠️ Vui lòng nhập mức giá Entry và Stop Loss (SL) hợp lệ!', 'warn');
@@ -758,6 +794,8 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             symbol, order_type, entry, sl, tp, rr, risk_pct, volume, leverage,
+            sl_mode: useStopLimitBE ? 'STOP_LIMIT_BE' : 'STOP_MARKET',
+            be_fee_pct,
             source: 'MT5 Dashboard'
           })
         });
@@ -1000,8 +1038,16 @@
               <td class="mono font-semibold text-purple-300">${t.quantity} <span class="text-[10px] text-slate-400">($${t.risk_usd})</span></td>
               <td class="mono font-semibold text-orange-300">${t.entry}</td>
               <td class="mono font-bold text-white">${t.mark_price}</td>
-              <td class="mono text-rose-400 font-semibold">${t.sl} ${t.is_be ? '<span class="px-1 py-0.2 bg-emerald-500/20 text-emerald-300 text-[10px] rounded">BE</span>' : ''}</td>
-              <td class="mono text-teal-400 font-semibold">${t.tp} <span class="text-[10px] text-slate-400">(${t.rr}R)</span></td>
+              <td class="mono text-rose-400 font-semibold">
+                <div>${t.sl}</div>
+                ${t.sl_mode === 'STOP_LIMIT_BE' ? `<div class="text-[10px] text-amber-300">🛡️ BE: ${t.be_price || '--'}</div>` : ''}
+              </td>
+              <td class="mono text-teal-400 font-semibold">
+                ${t.sl_triggered
+                  ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold">⚖️ CHỜ HỒI BE: ${t.be_price}</span>`
+                  : `${t.tp} <span class="text-[10px] text-slate-400">(${t.rr}R)</span>`
+                }
+              </td>
               <td class="mono font-bold ${pnlColor}">${pSign}$${t.floating_usd.toFixed(2)} (${pSign}${t.floating_r.toFixed(2)}R)</td>
               <td class="mono text-xs">
                 <span class="text-teal-400">Max: +${t.mfe_r.toFixed(2)}R</span>
@@ -1077,6 +1123,7 @@
           let badgeCls = 'bg-slate-800 text-slate-400';
           if (t.status === 'HIT_TP') badgeCls = 'bg-teal-500/20 text-teal-300 border border-teal-500/40';
           if (t.status === 'HIT_SL') badgeCls = 'bg-rose-500/20 text-rose-300 border border-rose-500/40';
+          if (t.status === 'HIT_BE') badgeCls = 'bg-amber-500/20 text-amber-300 border border-amber-500/40';
           if (t.status === 'MANUAL_CLOSE') badgeCls = 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40';
 
           return `

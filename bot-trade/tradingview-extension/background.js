@@ -1,4 +1,4 @@
-// Background Service Worker (v2.0.5) - Cầu nối gửi lệnh từ TradingView sang Bot Localhost không lo chặn CORS/HTTPS
+// Background Service Worker (v2.0.6) - Cầu nối gửi lệnh từ TradingView sang Bot Localhost không lo chặn CORS/HTTPS
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "PLACE_ORDER") {
     const botUrl = message.botUrl || "http://localhost:8000";

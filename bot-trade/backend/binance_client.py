@@ -338,6 +338,32 @@ class BinanceFuturesClient:
 
         return await self._signed_request("POST", "/fapi/v1/order", params)
 
+    async def place_reduce_limit_order(
+        self,
+        symbol: str,
+        side: str,  # Chiều của vị thế gốc: "LONG" hoặc "SHORT"
+        quantity: float,
+        price: float,
+    ) -> Dict[str, Any]:
+        """Đặt lệnh LIMIT đóng vị thế (chốt hòa / chốt lời reduceOnly) trên Binance Futures."""
+        sym = normalize_binance_symbol(symbol)
+        hedge = await self.is_hedge_mode()
+        close_side = "SELL" if side.upper() == "LONG" else "BUY"
+        pos_side = ("LONG" if side.upper() == "LONG" else "SHORT") if hedge else "BOTH"
+
+        params: Dict[str, Any] = {
+            "symbol": sym,
+            "side": close_side,
+            "positionSide": pos_side,
+            "type": "LIMIT",
+            "timeInForce": "GTC",
+            "quantity": quantity,
+            "price": price,
+        }
+        if not hedge:
+            params["reduceOnly"] = "true"
+        return await self._signed_request("POST", "/fapi/v1/order", params)
+
     async def place_sl_tp_orders(
         self,
         symbol: str,
@@ -345,6 +371,8 @@ class BinanceFuturesClient:
         quantity: float,
         sl_price: float,
         tp_price: float,
+        sl_mode: str = "STOP_LIMIT_BE",
+        be_price: float = 0.0,
     ) -> Dict[str, Any]:
         sym = normalize_binance_symbol(symbol)
         hedge = await self.is_hedge_mode()
@@ -354,15 +382,30 @@ class BinanceFuturesClient:
         results: Dict[str, Any] = {"sl_order": None, "tp_order": None}
 
         if sl_price > 0:
-            sl_params: Dict[str, Any] = {
-                "symbol": sym,
-                "side": close_side,
-                "positionSide": pos_side,
-                "type": "STOP_MARKET",
-                "stopPrice": sl_price,
-                "quantity": quantity,
-                "workingType": "MARK_PRICE",
-            }
+            if sl_mode.upper() == "STOP_LIMIT_BE" and be_price > 0:
+                # Đặt lệnh STOP-LIMIT trực tiếp trên Binance:
+                # Khi giá chạm stopPrice (SL), sàn tự kích hoạt lệnh LIMIT đóng tại be_price (Chốt Hòa)
+                sl_params: Dict[str, Any] = {
+                    "symbol": sym,
+                    "side": close_side,
+                    "positionSide": pos_side,
+                    "type": "STOP",
+                    "timeInForce": "GTC",
+                    "stopPrice": sl_price,
+                    "price": be_price,
+                    "quantity": quantity,
+                    "workingType": "MARK_PRICE",
+                }
+            else:
+                sl_params = {
+                    "symbol": sym,
+                    "side": close_side,
+                    "positionSide": pos_side,
+                    "type": "STOP_MARKET",
+                    "stopPrice": sl_price,
+                    "quantity": quantity,
+                    "workingType": "MARK_PRICE",
+                }
             if not hedge:
                 sl_params["reduceOnly"] = "true"
             try:

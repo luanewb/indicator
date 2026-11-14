@@ -1,6 +1,6 @@
 //@version=5
-// Version: 2.0.5
-indicator("Long/Short Bot-trade v2.0.5", overlay=true)
+// Version: 2.0.6
+indicator("Long/Short Bot-trade v2.0.6", overlay=true)
 
 // --- THIẾT LẬP MỨC GIÁ & NẾN VÀO LỆNH ---
 grp_setup      = "1. Mức giá & Vị trí nến vào lệnh"
@@ -37,9 +37,11 @@ showVol     = input.bool(false, "Nhãn khối lượng vào lệnh (Volume)", gr
 showBoxes   = input.bool(true,  "Vùng hộp lợi nhuận / rủi ro (Boxes)", group=grp_vis)
 showNotice  = input.bool(true,  "Bảng thông báo khi chỉ báo tạm ẩn trên cặp khác", group=grp_vis)
 
-// --- 7. KẾT NỐI BOT GIAO DỊCH BINANCE FUTURES (v2.0.3) ---
-grp_bot        = "7. Kết nối Bot Binance Futures (Bridge & Webhook)"
+// --- 7. KẾT NỐI BOT GIAO DỊCH BINANCE FUTURES (v2.0.6) ---
+grp_bot        = "7. Kết nối Bot Binance Futures (Bridge & Stop-Limit BE)"
 enableBridge   = input.bool(true, "Xuất dữ liệu cho Nút Đặt Lệnh trên TradingView", tooltip="Xuất các thông số (Chiều lệnh, Entry, SL, TP, Volume, Risk%, R:R) lên thanh trạng thái chỉ báo để Tiện ích Nút Bấm (Alt+B) đọc tự động theo thời gian thực.", group=grp_bot)
+useStopLimitBE = input.bool(true, "Chế độ Stop-Limit Chốt Hòa khi chạm SL", tooltip="Khi giá chạm Stop Loss: Hủy TP cũ và đặt lệnh Limit Chốt Hòa tại Entry + phí 2 chiều (0.04%).", group=grp_bot)
+beFeePct       = input.float(0.04, "Phí 2 chiều cộng vào giá Chốt Hòa (%)", minval=0.0, maxval=2.0, step=0.01, group=grp_bot)
 botLeverage    = input.int(20, "Đòn bẩy mặc định gửi sang Bot (x)", minval=1, maxval=125, group=grp_bot)
 enableWebhook  = input.bool(false, "Bắn tín hiệu JSON qua TradingView Alert", tooltip="Bật tùy chọn này nếu bạn muốn dùng thêm tính năng Webhook Alert gốc của TradingView.", group=grp_bot)
 
@@ -82,6 +84,8 @@ if isLong
     finalTP := finalEntry + (riskDist * rrRatio)
 else if isShort
     finalTP := finalEntry - (riskDist * rrRatio)
+
+float bePrice = isLong ? (finalEntry * (1.0 + beFeePct / 100.0)) : (finalEntry * (1.0 - beFeePct / 100.0))
 
 // --- TÍNH TOÁN KHỐI LƯỢNG (POSITION SIZE / VOLUME) ---
 float riskAmount = accountBal * (riskPercent / 100.0)
@@ -131,9 +135,13 @@ f_processSegment(float pStart, float pEnd, string st, bool trig, int trigBar, in
     if nSt == "ACTIVE" and rDist > 0.0
         if dirLong
             if activeStart <= sl
-                nSt     := "HIT_SL"
-                nEndB   := bIdx
                 nMaxAdv := math.max(nMaxAdv, 1.0)
+                if useStopLimitBE
+                    nSt := "WAIT_BE"
+                    activeStart := sl
+                else
+                    nSt   := "HIT_SL"
+                    nEndB := bIdx
             else if activeStart >= tp
                 nSt     := "HIT_TP"
                 nEndB   := bIdx
@@ -141,8 +149,12 @@ f_processSegment(float pStart, float pEnd, string st, bool trig, int trigBar, in
             else if pEnd <= sl
                 nMaxFav := math.max(nMaxFav, math.max(0.0, activeStart - entry) / rDist)
                 nMaxAdv := math.max(nMaxAdv, 1.0)
-                nSt     := "HIT_SL"
-                nEndB   := bIdx
+                if useStopLimitBE
+                    nSt := "WAIT_BE"
+                    activeStart := sl
+                else
+                    nSt   := "HIT_SL"
+                    nEndB := bIdx
             else if pEnd >= tp
                 nMaxAdv := math.max(nMaxAdv, math.max(0.0, entry - activeStart) / rDist)
                 nMaxFav := math.max(nMaxFav, (tp - entry) / rDist)
@@ -155,9 +167,13 @@ f_processSegment(float pStart, float pEnd, string st, bool trig, int trigBar, in
                 nMaxAdv := math.max(nMaxAdv, math.max(0.0, entry - segLow) / rDist)
         else
             if activeStart >= sl
-                nSt     := "HIT_SL"
-                nEndB   := bIdx
                 nMaxAdv := math.max(nMaxAdv, 1.0)
+                if useStopLimitBE
+                    nSt := "WAIT_BE"
+                    activeStart := sl
+                else
+                    nSt   := "HIT_SL"
+                    nEndB := bIdx
             else if activeStart <= tp
                 nSt     := "HIT_TP"
                 nEndB   := bIdx
@@ -165,8 +181,12 @@ f_processSegment(float pStart, float pEnd, string st, bool trig, int trigBar, in
             else if pEnd >= sl
                 nMaxFav := math.max(nMaxFav, math.max(0.0, entry - activeStart) / rDist)
                 nMaxAdv := math.max(nMaxAdv, 1.0)
-                nSt     := "HIT_SL"
-                nEndB   := bIdx
+                if useStopLimitBE
+                    nSt := "WAIT_BE"
+                    activeStart := sl
+                else
+                    nSt   := "HIT_SL"
+                    nEndB := bIdx
             else if pEnd <= tp
                 nMaxAdv := math.max(nMaxAdv, math.max(0.0, activeStart - entry) / rDist)
                 nMaxFav := math.max(nMaxFav, (entry - tp) / rDist)
@@ -177,6 +197,21 @@ f_processSegment(float pStart, float pEnd, string st, bool trig, int trigBar, in
                 float segLow  = math.min(activeStart, pEnd)
                 nMaxFav := math.max(nMaxFav, math.max(0.0, entry - segLow) / rDist)
                 nMaxAdv := math.max(nMaxAdv, math.max(0.0, segHigh - entry) / rDist)
+
+    // 3. Nếu đã chạm SL ở chế độ Stop-Limit Chốt Hòa (WAIT_BE): Hủy TP và chờ giá hồi về bePrice
+    if nSt == "WAIT_BE" and rDist > 0.0
+        if dirLong
+            float segLow = math.min(activeStart, pEnd)
+            nMaxAdv := math.max(nMaxAdv, math.max(1.0, (entry - segLow) / rDist))
+            if activeStart >= bePrice or pEnd >= bePrice
+                nSt   := "HIT_BE"
+                nEndB := bIdx
+        else
+            float segHigh = math.max(activeStart, pEnd)
+            nMaxAdv := math.max(nMaxAdv, math.max(1.0, (segHigh - entry) / rDist))
+            if activeStart <= bePrice or pEnd <= bePrice
+                nSt   := "HIT_BE"
+                nEndB := bIdx
 
     [nSt, nTrig, nTrigB, nEndB, nMaxFav, nMaxAdv]
 
@@ -243,7 +278,7 @@ if isChartActive and not na(startBar) and bar_index >= startBar and finalSL != 0
 
 // Tính Floating P&L tại nến hiện tại (tính theo giá Close)
 float currentFloatingR = 0.0
-if tradeStatus == "ACTIVE" and riskDist > 0.0
+if (tradeStatus == "ACTIVE" or tradeStatus == "WAIT_BE") and riskDist > 0.0
     float pnlDist = isLong ? (close - finalEntry) : (finalEntry - close)
     currentFloatingR := pnlDist / riskDist
 
@@ -284,7 +319,7 @@ if barstate.islast
     if not isChartActive and (entryPx != 0.0 or slPx != 0.0)
         if showNotice
             string reason = not symbolMatches ? ("Khóa cặp: [" + targetSymbol + "] | Hiện tại: [" + syminfo.ticker + "]") : ("Lệch giá: Entry " + str.tostring(finalEntry, "#.##") + " vs " + str.tostring(close, "#.##") + " (" + str.tostring(priceDiffPct, "#.#") + "%)")
-            table.cell(noticeTable, 0, 0, "⚠️ Tracker v2.0.5: Tạm ẩn", text_color=color.orange, text_size=size.small, bgcolor=color.new(color.black, 15))
+            table.cell(noticeTable, 0, 0, "⚠️ Tracker v2.0.6: Tạm ẩn", text_color=color.orange, text_size=size.small, bgcolor=color.new(color.black, 15))
             table.cell(noticeTable, 0, 1, reason + "\nChuyển về đúng cặp tiền để hiển thị.", text_color=color.white, text_size=size.tiny, bgcolor=color.new(color.black, 15))
     else if not na(startBar) and finalSL != 0.0 and finalSL != finalEntry
         // Xây dựng nội dung trạng thái và thông số MFE / MAE
@@ -297,6 +332,17 @@ if barstate.islast
             string sign = currentFloatingR >= 0 ? "+" : ""
             statusText  := "ACTIVE | " + sign + str.tostring(currentFloatingR, "#.##") + "R (" + sign + "$" + str.tostring(currentFloatingUSD, "#.##") + ")" +
                            "\nMax Run: +" + str.tostring(maxFavorableR, "#.##") + "R | DD: -" + str.tostring(maxAdverseR, "#.##") + "R"
+
+        else if tradeStatus == "WAIT_BE"
+            statusColor := color.orange
+            string sign = currentFloatingR >= 0 ? "+" : ""
+            statusText  := "CHỜ HỒI CHỐT HÒA @ " + str.tostring(bePrice, format.mintick) + " | " + sign + str.tostring(currentFloatingR, "#.##") + "R" +
+                           "\nĐã hủy TP | DD: -" + str.tostring(maxAdverseR, "#.##") + "R"
+
+        else if tradeStatus == "HIT_BE"
+            statusColor := color.olive
+            statusText  := "HIT BE - CHỐT HÒA (0.00R | $0.00 @ " + str.tostring(bePrice, format.mintick) + ")" +
+                           "\nMax DD: -" + str.tostring(maxAdverseR, "#.##") + "R"
 
         else if tradeStatus == "HIT_TP"
             statusColor := color.teal
@@ -361,6 +407,6 @@ plot(enableBridge ? botLeverage  : na, "BOT_LEV",      color=color.gray,   displ
 
 if enableWebhook and barstate.islast and isValidSetup
     string sideStr = isLong ? "LONG" : "SHORT"
-    string payload = '{"symbol":"' + syminfo.ticker + '","side":"' + sideStr + '","entry":' + str.tostring(finalEntry) + ',"sl":' + str.tostring(finalSL) + ',"tp":' + str.tostring(finalTP) + ',"volume":' + str.tostring(calcVolume) + ',"risk_pct":' + str.tostring(riskPercent) + ',"risk_usd":' + str.tostring(riskAmount) + ',"rr":' + str.tostring(rrRatio) + ',"leverage":' + str.tostring(botLeverage) + ',"version":"2.0.5"}'
+    string payload = '{"symbol":"' + syminfo.ticker + '","side":"' + sideStr + '","entry":' + str.tostring(finalEntry) + ',"sl":' + str.tostring(finalSL) + ',"tp":' + str.tostring(finalTP) + ',"be_price":' + str.tostring(bePrice) + ',"sl_mode":"' + (useStopLimitBE ? "STOP_LIMIT_BE" : "STOP_MARKET") + '","volume":' + str.tostring(calcVolume) + ',"risk_pct":' + str.tostring(riskPercent) + ',"risk_usd":' + str.tostring(riskAmount) + ',"rr":' + str.tostring(rrRatio) + ',"leverage":' + str.tostring(botLeverage) + ',"version":"2.0.6"}'
     alert(payload, alert.freq_once_per_bar)
 

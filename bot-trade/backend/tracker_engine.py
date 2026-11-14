@@ -34,7 +34,8 @@ class TrackerEngine:
             "default_risk_pct": 1.0,
             "default_rr": 2.0,
             "auto_sl_tp_on_exchange": True,
-            "be_fee_offset_pct": 0.08,  # 0.08% bù phí giao dịch khi dời SL về BE
+            "default_sl_mode": "STOP_LIMIT_BE",  # STOP_LIMIT_BE (Chạm SL -> Hủy TP & Đặt Limit Chốt Hòa) hoặc STOP_MARKET
+            "be_fee_offset_pct": 0.04,  # 0.04% bù phí giao dịch 2 chiều khi đặt lệnh Chốt Hòa
         }
         self._load_settings()
 
@@ -60,7 +61,16 @@ class TrackerEngine:
         self.event_logs: List[Dict[str, Any]] = []
         self._lock = asyncio.Lock()
         self._load_trades()
-        self._log("INFO", f"Khởi động Long/Short Tracker Bot v2.0.5 (Chế độ: {self.settings['trading_mode']})")
+        self._log("INFO", f"Khởi động Long/Short Tracker Bot v2.0.6 (Chế độ: {self.settings['trading_mode']})")
+
+    def calc_be_price(self, symbol: str, side: str, entry_px: float, fee_pct: Optional[float] = None) -> float:
+        """Tính mức giá Chốt Hòa (Breakeven) cộng phí 2 chiều (mặc định 0.04%)."""
+        pct = float(fee_pct if fee_pct is not None else self.settings.get("be_fee_offset_pct", 0.04)) / 100.0
+        if side.upper() == "LONG":
+            raw_be = entry_px * (1.0 + pct)
+        else:
+            raw_be = entry_px * (1.0 - pct)
+        return self.client.round_price(symbol, raw_be)
 
     def _log(self, level: str, message: str) -> None:
         entry = {
@@ -198,6 +208,18 @@ class TrackerEngine:
             leverage = int(payload.get("leverage") or self.settings.get("default_leverage", 20))
             source = str(payload.get("source", "TradingView"))
 
+            sl_mode = str(payload.get("sl_mode") or self.settings.get("default_sl_mode", "STOP_LIMIT_BE")).upper()
+            be_fee_pct = float(
+                payload.get("be_fee_pct")
+                if payload.get("be_fee_pct") is not None
+                else self.settings.get("be_fee_offset_pct", 0.04)
+            )
+            be_price = float(payload.get("be_price") or 0.0)
+            if be_price <= 0.0:
+                be_price = self.calc_be_price(symbol, side, entry_px, be_fee_pct)
+            else:
+                be_price = self.client.round_price(symbol, be_price)
+
             trade_id = f"TRK-{int(time.time() * 1000) % 100000000}"
             now_ts = int(time.time() * 1000)
 
@@ -212,6 +234,11 @@ class TrackerEngine:
                 "sl": sl_px,
                 "initial_sl": sl_px,
                 "tp": tp_px,
+                "initial_tp": tp_px,
+                "sl_mode": sl_mode,
+                "be_fee_pct": be_fee_pct,
+                "be_price": be_price,
+                "sl_triggered": False,
                 "rr": round(rr_ratio, 2),
                 "quantity": quantity,
                 "initial_quantity": quantity,
@@ -287,12 +314,12 @@ class TrackerEngine:
 
             self._log(
                 "SUCCESS",
-                f"[{source}] Đặt lệnh {order_type} {side} {symbol} | Entry: {entry_px} | SL: {sl_px} | TP: {tp_px} | Vol: {quantity} (Risk: ${actual_risk_usd})",
+                f"[{source}] Đặt lệnh {order_type} {side} {symbol} | Entry: {entry_px} | SL: {sl_px} ({sl_mode} -> BE: {be_price}) | TP: {tp_px} | Vol: {quantity}",
             )
             return trade_record
 
     async def _attach_exchange_sl_tp(self, trade: Dict[str, Any]) -> None:
-        """Đặt lệnh STOP_MARKET (SL) và TAKE_PROFIT_MARKET (TP) lên sàn Binance Futures khi vị thế ACTIVE."""
+        """Đặt lệnh SL (STOP_LIMIT_BE hoặc STOP_MARKET) và TAKE_PROFIT_MARKET (TP) lên sàn Binance Futures."""
         if self.settings["trading_mode"] not in ("TESTNET", "MAINNET"):
             return
         if not self.settings.get("auto_sl_tp_on_exchange", True):
@@ -309,12 +336,29 @@ class TrackerEngine:
                     pass
                 trade[oid_key] = None
 
+        # Nếu đã kích hoạt trạng thái chờ hồi về Chốt Hòa (sl_triggered == True) -> Chỉ đặt lệnh Limit đóng tại be_price
+        if trade.get("sl_triggered"):
+            be_px = trade.get("be_price") or self.calc_be_price(symbol, trade["side"], trade["entry"], trade.get("be_fee_pct"))
+            try:
+                be_order = await self.client.place_reduce_limit_order(
+                    symbol=symbol,
+                    side=trade["side"],
+                    quantity=trade["quantity"],
+                    price=be_px,
+                )
+                trade["exchange_sl_order_id"] = be_order.get("orderId")
+            except Exception as e:
+                self._log("ERROR", f"Lỗi đặt lệnh Limit Chốt Hòa trên sàn cho {symbol}: {e}")
+            return
+
         res = await self.client.place_sl_tp_orders(
             symbol=symbol,
             side=trade["side"],
             quantity=trade["quantity"],
             sl_price=trade["sl"],
             tp_price=trade["tp"],
+            sl_mode=trade.get("sl_mode", "STOP_LIMIT_BE"),
+            be_price=trade.get("be_price", 0.0),
         )
         if res.get("sl_order"):
             trade["exchange_sl_order_id"] = res["sl_order"].get("orderId")
@@ -481,11 +525,7 @@ class TrackerEngine:
 
             symbol = trade["symbol"]
             entry_px = trade["entry"]
-            fee_offset = float(self.settings.get("be_fee_offset_pct", 0.08)) / 100.0
-            if trade["side"] == "LONG":
-                new_sl = self.client.round_price(symbol, entry_px * (1.0 + fee_offset))
-            else:
-                new_sl = self.client.round_price(symbol, entry_px * (1.0 - fee_offset))
+            new_sl = self.calc_be_price(symbol, trade["side"], entry_px, trade.get("be_fee_pct"))
 
             trade["sl"] = new_sl
             trade["is_be"] = True
@@ -529,6 +569,7 @@ class TrackerEngine:
                 trade["side"] = "LONG" if trade["sl"] < trade["entry"] else "SHORT"
                 trade["risk_dist"] = abs(trade["entry"] - trade["sl"])
                 trade["risk_usd"] = round(trade["quantity"] * trade["risk_dist"], 2)
+                trade["be_price"] = self.calc_be_price(symbol, trade["side"], trade["entry"], trade.get("be_fee_pct"))
                 if trade["risk_dist"] > 0:
                     trade["rr"] = round(abs(trade["tp"] - trade["entry"]) / trade["risk_dist"], 2)
 
@@ -700,7 +741,7 @@ class TrackerEngine:
                         if self.settings["trading_mode"] in ("TESTNET", "MAINNET"):
                             await self._attach_exchange_sl_tp(trade)
 
-                # 2. Trạng thái ACTIVE -> Tính Floating R, MFE, MAE & Kiểm tra HIT_TP / HIT_SL
+                # 2. Trạng thái ACTIVE -> Tính Floating R, MFE, MAE & Kiểm tra HIT_TP / HIT_SL / STOP_LIMIT_BE
                 if status == "ACTIVE" and r_dist > 0:
                     pnl_dist = (mark_px - entry) if is_long else (entry - mark_px)
                     current_r = pnl_dist / r_dist
@@ -714,32 +755,99 @@ class TrackerEngine:
                     elif current_r < 0:
                         trade["mae_r"] = round(max(trade.get("mae_r", 0.0), abs(current_r)), 2)
 
+                    sl_mode = trade.get("sl_mode", "STOP_LIMIT_BE").upper()
+                    sl_triggered = bool(trade.get("sl_triggered", False))
+                    be_px = trade.get("be_price") or self.calc_be_price(sym, trade["side"], entry, trade.get("be_fee_pct"))
+                    trade["be_price"] = be_px
+
+                    # TRƯỜNG HỢP A: Đã chạm SL trước đó và đang chờ hồi về giá Chốt Hòa (be_px)
+                    if sl_triggered:
+                        hit_be = (mark_px >= be_px) if is_long else (mark_px <= be_px)
+                        if hit_be:
+                            trade["status"] = "HIT_BE"
+                            trade["closed_at"] = int(time.time() * 1000)
+                            trade["close_reason"] = "HIT_BE"
+                            trade["realized_usd"] = 0.0
+                            trade["realized_r"] = 0.0
+                            trade["floating_r"] = 0.0
+                            trade["floating_usd"] = 0.0
+                            changed = True
+
+                            if self.settings["trading_mode"] in ("TESTNET", "MAINNET"):
+                                await self._cleanup_exchange_orders(trade)
+
+                            self._log(
+                                "SUCCESS",
+                                f"⚖️ HIT BE ({be_px}): Giá đã hồi về điểm Chốt Hòa (trừ phí {trade.get('be_fee_pct', 0.04)}%), đóng lệnh {trade['side']} {sym} hòa vốn!",
+                            )
+                        else:
+                            total_unrealized_usd += trade["floating_usd"]
+                            total_floating_r += trade["floating_r"]
+                            lev = max(1, int(trade.get("leverage", 20)))
+                            total_used_margin += (trade["quantity"] * mark_px) / lev
+                        continue
+
+                    # TRƯỜNG HỢP B: Chưa chạm SL -> Kiểm tra chạm SL hoặc chạm TP
                     hit_sl = (mark_px <= sl) if is_long else (mark_px >= sl)
                     hit_tp = (mark_px >= tp) if is_long else (mark_px <= tp)
 
                     if hit_sl:
-                        trade["status"] = "HIT_SL"
-                        trade["closed_at"] = int(time.time() * 1000)
-                        trade["close_reason"] = "HIT_SL"
-                        sl_pnl_dist = (sl - entry) if is_long else (entry - sl)
-                        sl_usd = round(sl_pnl_dist * trade["quantity"], 2)
-                        trade["realized_usd"] = round(trade.get("realized_usd", 0.0) + sl_usd, 2)
-                        trade["realized_r"] = round(sl_pnl_dist / r_dist, 2)
-                        trade["mae_r"] = max(trade.get("mae_r", 0.0), 1.0)
-                        trade["floating_r"] = 0.0
-                        trade["floating_usd"] = 0.0
-                        changed = True
+                        if sl_mode == "STOP_LIMIT_BE":
+                            # KÍCH HOẠT STOP-LIMIT CHỐT HÒA:
+                            # 1. Hủy lệnh TP cũ
+                            # 2. Kích hoạt lệnh Limit Chốt Hòa ở mức be_px (Entry + 0.04% phí)
+                            old_tp = trade["tp"]
+                            trade["sl_triggered"] = True
+                            trade["tp"] = be_px
+                            trade["is_be"] = True
+                            trade["mae_r"] = round(max(trade.get("mae_r", 0.0), 1.0), 2)
+                            changed = True
 
-                        if self.settings["trading_mode"] == "PAPER":
-                            self.settings["paper_balance"] = round(self.settings["paper_balance"] + sl_usd, 2)
-                            self._save_settings()
+                            if self.settings["trading_mode"] in ("TESTNET", "MAINNET"):
+                                # Hủy lệnh TP trên sàn Binance
+                                tp_oid = trade.get("exchange_tp_order_id")
+                                if tp_oid:
+                                    try:
+                                        await self.client.cancel_order(sym, int(tp_oid))
+                                    except Exception:
+                                        pass
+                                    trade["exchange_tp_order_id"] = None
+                                # Nếu chưa có lệnh STOP-LIMIT trên sàn thì đặt trực tiếp lệnh Limit reduceOnly tại be_px
+                                if not trade.get("exchange_sl_order_id"):
+                                    await self._attach_exchange_sl_tp(trade)
+
+                            self._log(
+                                "WARN",
+                                f"🛡️ Chạm SL ({sl}) lệnh {trade['side']} {sym} -> Đã HỦY TP ({old_tp}) & Kích hoạt Stop-Limit Chốt Hòa tại {be_px}!",
+                            )
+                            total_unrealized_usd += trade["floating_usd"]
+                            total_floating_r += trade["floating_r"]
+                            lev = max(1, int(trade.get("leverage", 20)))
+                            total_used_margin += (trade["quantity"] * mark_px) / lev
                         else:
-                            await self._cleanup_exchange_orders(trade)
+                            # Chế độ STOP_MARKET truyền thống: cắt lỗ ngay tại SL
+                            trade["status"] = "HIT_SL"
+                            trade["closed_at"] = int(time.time() * 1000)
+                            trade["close_reason"] = "HIT_SL"
+                            sl_pnl_dist = (sl - entry) if is_long else (entry - sl)
+                            sl_usd = round(sl_pnl_dist * trade["quantity"], 2)
+                            trade["realized_usd"] = round(trade.get("realized_usd", 0.0) + sl_usd, 2)
+                            trade["realized_r"] = round(sl_pnl_dist / r_dist, 2)
+                            trade["mae_r"] = max(trade.get("mae_r", 0.0), 1.0)
+                            trade["floating_r"] = 0.0
+                            trade["floating_usd"] = 0.0
+                            changed = True
 
-                        self._log(
-                            "WARN",
-                            f"🛑 Chạm SL ({sl}) lệnh {trade['side']} {sym} | Kết quả: {trade['realized_r']}R (${trade['realized_usd']}) | MFE từng đạt: +{trade['mfe_r']}R",
-                        )
+                            if self.settings["trading_mode"] == "PAPER":
+                                self.settings["paper_balance"] = round(self.settings["paper_balance"] + sl_usd, 2)
+                                self._save_settings()
+                            else:
+                                await self._cleanup_exchange_orders(trade)
+
+                            self._log(
+                                "WARN",
+                                f"🛑 Chạm SL ({sl}) lệnh {trade['side']} {sym} | Kết quả: {trade['realized_r']}R (${trade['realized_usd']}) | MFE từng đạt: +{trade['mfe_r']}R",
+                            )
 
                     elif hit_tp:
                         trade["status"] = "HIT_TP"
@@ -796,14 +904,14 @@ class TrackerEngine:
         pending_orders = [t for t in all_trades if t["status"] == "WAITING"]
         history_trades = [t for t in all_trades if t["status"] not in ("ACTIVE", "WAITING")]
 
-        closed_with_result = [t for t in history_trades if t["status"] in ("HIT_TP", "HIT_SL", "MANUAL_CLOSE")]
+        closed_with_result = [t for t in history_trades if t["status"] in ("HIT_TP", "HIT_SL", "HIT_BE", "MANUAL_CLOSE")]
         wins = [t for t in closed_with_result if t.get("realized_usd", 0.0) > 0]
         win_rate = round((len(wins) / len(closed_with_result)) * 100.0, 1) if closed_with_result else 0.0
         total_realized_usd = round(sum(t.get("realized_usd", 0.0) for t in closed_with_result), 2)
         total_realized_r = round(sum(t.get("realized_r", 0.0) for t in closed_with_result), 2)
 
         return {
-            "version": "2.0.5",
+            "version": "2.0.6",
             "mode": self.settings["trading_mode"],
             "account": self.account_cache,
             "positions": active_positions,
