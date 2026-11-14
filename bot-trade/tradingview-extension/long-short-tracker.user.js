@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Long/Short Tracker v2.0.4 - Nút Đặt Lệnh Binance Futures (Alt+B)
+// @name         Long/Short Tracker v2.0.5 - Nút Đặt Lệnh Binance Futures (Alt+B)
 // @namespace    http://localhost:8000/
-// @version      2.0.4
+// @version      2.0.5
 // @description  Đọc Entry, SL, TP, Volume từ chỉ báo Long/Short Tracker trên TradingView và gửi lệnh sang Bot Binance Futures bằng nút bấm hoặc phím tắt Alt+B.
 // @author       Antigravity
 // @match        *://*.tradingview.com/chart/*
@@ -70,7 +70,7 @@
   box.style.cssText = "position:fixed;bottom:24px;right:24px;width:300px;background:#131722;border:1px solid #2a2e39;border-top:3px solid #14b8a6;border-radius:10px;padding:10px 12px;color:#fff;font-family:sans-serif;font-size:12px;z-index:999999;box-shadow:0 10px 25px rgba(0,0,0,0.65);";
   box.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-weight:700;">
-      <span>⚡ TRACKER BOT v2.0.4</span>
+      <span>⚡ TRACKER BOT v2.0.5</span>
       <a href="${BOT_URL}" target="_blank" style="color:#38bdf8;font-size:11px;text-decoration:none;">MT5 UI ↗</a>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">

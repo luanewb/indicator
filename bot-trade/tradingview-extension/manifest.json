@@ -1,8 +1,23 @@
 {
   "manifest_version": 3,
-  "name": "Long/Short Tracker - Nút Đặt Lệnh Binance Futures (v2.0.4)",
-  "version": "2.0.4",
+  "name": "Long/Short Tracker - Nút Đặt Lệnh Binance Futures (v2.0.5)",
+  "version": "2.0.5",
   "description": "Đọc tín hiệu Entry, SL, TP, Volume từ chỉ báo Long/Short Tracker trên TradingView và đặt lệnh sang Bot Binance Futures bằng 1 nút bấm hoặc phím tắt Alt+B.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Long/Short Tracker Bot v2.0.5 (Alt + B)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
   "permissions": [
     "storage"
   ],
@@ -26,4 +41,3 @@
     }
   ]
 }
-

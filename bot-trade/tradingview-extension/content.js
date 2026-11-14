@@ -1,4 +1,4 @@
-// Long/Short Tracker Bridge v2.0.4 - Nút Đặt Lệnh & Phím tắt (Alt+B) ngay trên TradingView
+// Long/Short Tracker Bridge v2.0.5 - Nút Đặt Lệnh & Phím tắt (Alt+B) ngay trên TradingView
 (function () {
   // Cho phép ghi đè nếu bản cũ đang chạy
   const oldPanel = document.getElementById("ls-tracker-floating-panel");
@@ -165,7 +165,7 @@
     <div id="lst-header" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#1e222d;border-radius:8px 8px 0 0;cursor:move;">
       <div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:12px;color:#fff;">
         <span id="lst-dot" style="width:8px;height:8px;border-radius:50%;background:#10b981;display:inline-block;"></span>
-        <span>⚡ LONG/SHORT TRACKER v2.0.4</span>
+        <span>⚡ LONG/SHORT TRACKER v2.0.5</span>
       </div>
       <div style="display:flex;align-items:center;gap:6px;">
         <button id="lst-sync-now" title="Đọc lại giá từ biểu đồ ngay lập tức" style="background:#334155;border:none;color:#e2e8f0;border-radius:4px;cursor:pointer;font-size:10px;padding:2px 6px;font-weight:600;">🔄 Sync</button>
